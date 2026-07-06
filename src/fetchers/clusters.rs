@@ -24,6 +24,7 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
                     status: c["state"].as_str().unwrap_or("").parse().unwrap(),
                     detail: c["cluster_id"].as_str().map(str::to_string),
                     id: c["cluster_id"].as_str().map(str::to_string),
+                    history: Vec::new(),
                 })
                 .collect()
         })

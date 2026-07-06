@@ -1,6 +1,6 @@
 use crate::cli::DatabricksCli;
 use crate::fetchers;
-use crate::shape::Shape;
+use crate::shape::{DetailData, Shape, Status};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -68,9 +68,18 @@ impl Panel {
 pub struct Detail {
     pub panel: Panel,
     pub name: String,
+    pub id: String,
     /// None while the fetch is in flight.
-    pub content: Option<String>,
+    pub data: Option<DetailData>,
+    /// Toggles between the formatted summary and the raw JSON.
+    pub show_raw: bool,
     pub scroll: u16,
+}
+
+/// A pending destructive/mutating action awaiting a y/n keystroke.
+pub struct Confirm {
+    pub message: String,
+    args: Vec<String>,
 }
 
 enum Update {
@@ -91,9 +100,13 @@ pub struct App {
     last_refresh: Instant,
     pub loading: bool,
     pub detail: Option<Detail>,
+    pub confirm: Option<Confirm>,
+    pub flash: Option<(String, Instant)>,
     pub selected: [usize; 4],
+    pub host: Option<String>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
-    detail_rx: Option<oneshot::Receiver<String>>,
+    detail_rx: Option<oneshot::Receiver<DetailData>>,
+    action_rx: Option<oneshot::Receiver<Result<String, String>>>,
     in_flight: usize,
     spinner_frame: usize,
 }
@@ -113,9 +126,13 @@ impl App {
                 .unwrap_or(Instant::now()),
             loading: false,
             detail: None,
+            confirm: None,
+            flash: None,
             selected: [0; 4],
+            host: None,
             pending: None,
             detail_rx: None,
+            action_rx: None,
             in_flight: 0,
             spinner_frame: 0,
         }
@@ -153,12 +170,17 @@ impl App {
         self.selected[idx] = self.selection(idx).saturating_sub(1);
     }
 
-    pub fn open_detail(&mut self, cli: &Arc<DatabricksCli>) {
+    /// The currently highlighted item in the focused panel.
+    fn selected_item(&self) -> Option<&crate::shape::ListItem> {
         let idx = self.focus_index();
-        let Some(Shape::List(items)) = &self.shapes[idx] else {
-            return;
-        };
-        let Some(item) = items.get(self.selection(idx)) else {
+        match &self.shapes[idx] {
+            Some(Shape::List(items)) => items.get(self.selection(idx)),
+            _ => None,
+        }
+    }
+
+    pub fn open_detail(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(item) = self.selected_item() else {
             return;
         };
         let Some(id) = item.id.clone() else {
@@ -167,7 +189,9 @@ impl App {
         self.detail = Some(Detail {
             panel: self.focus,
             name: item.name.clone(),
-            content: None,
+            id: id.clone(),
+            data: None,
+            show_raw: false,
             scroll: 0,
         });
 
@@ -176,11 +200,8 @@ impl App {
         let cli = Arc::clone(cli);
         let group = self.focus.cli_group();
         tokio::spawn(async move {
-            let text = match cli.run(&[group, "get", id.as_str()]).await {
-                Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
-                Err(e) => format!("{e:#}"),
-            };
-            let _ = tx.send(text);
+            let data = fetchers::detail::fetch(&cli, group, &id).await;
+            let _ = tx.send(data);
         });
     }
 
@@ -189,15 +210,22 @@ impl App {
         self.detail_rx = None;
     }
 
+    pub fn toggle_raw(&mut self) {
+        if let Some(d) = &mut self.detail {
+            d.show_raw = !d.show_raw;
+            d.scroll = 0;
+        }
+    }
+
     /// Applies a finished detail fetch; returns true if the UI should redraw.
     pub fn poll_detail(&mut self) -> bool {
         let Some(rx) = &mut self.detail_rx else {
             return false;
         };
         match rx.try_recv() {
-            Ok(text) => {
+            Ok(data) => {
                 if let Some(d) = &mut self.detail {
-                    d.content = Some(text);
+                    d.data = Some(data);
                 }
                 self.detail_rx = None;
                 true
@@ -212,17 +240,149 @@ impl App {
 
     pub fn detail_scroll(&mut self, delta: i32) {
         if let Some(d) = &mut self.detail {
-            let max = d
-                .content
-                .as_deref()
-                .map(|c| c.lines().count().saturating_sub(1) as u16)
-                .unwrap_or(0);
+            let max = match &d.data {
+                Some(data) if d.show_raw => data.raw.lines().count(),
+                Some(data) => data.summary.len() + data.activity.len() + 3,
+                None => 0,
+            } as u16;
             d.scroll = if delta < 0 {
                 d.scroll.saturating_sub(delta.unsigned_abs() as u16)
             } else {
-                (d.scroll + delta as u16).min(max)
+                (d.scroll + delta as u16).min(max.saturating_sub(1))
             };
         }
+    }
+
+    /// Prepares a contextual action for the selected item, pending confirmation:
+    /// start/stop for clusters, warehouses and pipelines, run-now for jobs.
+    pub fn request_action(&mut self) {
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let Some(id) = item.id.clone() else {
+            return;
+        };
+        let name = item.name.clone();
+        let active = matches!(
+            item.status,
+            Status::Running | Status::Pending | Status::Success
+        );
+        let group = self.focus.cli_group();
+        let (verb, action): (&str, &str) = match self.focus {
+            Panel::Jobs => ("Run", "run-now"),
+            Panel::Clusters if active => ("Stop", "delete"),
+            Panel::Pipelines if active => ("Stop", "stop"),
+            Panel::Pipelines => ("Start update for", "start-update"),
+            _ if active => ("Stop", "stop"),
+            _ => ("Start", "start"),
+        };
+        self.confirm = Some(Confirm {
+            message: format!("{verb} {} “{}”?", group.trim_end_matches('s'), name),
+            args: vec![group.to_string(), action.to_string(), id],
+        });
+    }
+
+    pub fn cancel_confirm(&mut self) {
+        self.confirm = None;
+    }
+
+    pub fn confirm_execute(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(c) = self.confirm.take() else {
+            return;
+        };
+        let base = c.message.trim_end_matches('?').to_string();
+        self.flash = Some((format!("⏳ {base}…"), Instant::now()));
+
+        let (tx, rx) = oneshot::channel();
+        self.action_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let args: Vec<&str> = c.args.iter().map(String::as_str).collect();
+            let result = match cli.run_action(&args).await {
+                Ok(()) => Ok(format!("✓ {base} — done")),
+                Err(e) => Err(format!("✗ {e:#}")),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Applies a finished action; refreshes on success. Returns true on change.
+    pub fn poll_action(&mut self, cli: &Arc<DatabricksCli>) -> bool {
+        let Some(rx) = &mut self.action_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                let ok = result.is_ok();
+                self.flash = Some((result.unwrap_or_else(|e| e), Instant::now()));
+                self.action_rx = None;
+                if ok {
+                    self.start_refresh(cli);
+                }
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.action_rx = None;
+                true
+            }
+        }
+    }
+
+    /// Drops the flash message once it has been visible long enough.
+    pub fn expire_flash(&mut self) -> bool {
+        if let Some((_, since)) = &self.flash {
+            if since.elapsed() >= Duration::from_secs(5) && self.action_rx.is_none() {
+                self.flash = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Opens the selected item (or the open detail view) in the workspace web UI.
+    pub fn open_in_browser(&self) {
+        let Some(host) = &self.host else {
+            return;
+        };
+        let (panel, id) = match &self.detail {
+            Some(d) => (d.panel, Some(d.id.clone())),
+            None => (self.focus, self.selected_item().and_then(|i| i.id.clone())),
+        };
+        let Some(id) = id else {
+            return;
+        };
+        let path = match panel {
+            Panel::Clusters => format!("compute/clusters/{id}"),
+            Panel::Jobs => format!("jobs/{id}"),
+            Panel::Pipelines => format!("pipelines/{id}"),
+            Panel::Warehouses => format!("sql/warehouses/{id}"),
+        };
+        let url = format!("{}/{}", host.trim_end_matches('/'), path);
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(not(target_os = "macos"))]
+        let opener = "xdg-open";
+        let _ = std::process::Command::new(opener).arg(url).spawn();
+    }
+
+    /// Counts of (ok, pending, failed, idle) items across all panels.
+    pub fn status_counts(&self) -> (usize, usize, usize, usize) {
+        let (mut ok, mut pending, mut failed, mut idle) = (0, 0, 0, 0);
+        for shape in self.shapes.iter().flatten() {
+            if let Shape::List(items) = shape {
+                for item in items {
+                    match item.status {
+                        Status::Running | Status::Success => ok += 1,
+                        Status::Pending => pending += 1,
+                        Status::Failed => failed += 1,
+                        Status::Stopped => idle += 1,
+                        Status::Unknown(_) => {}
+                    }
+                }
+            }
+        }
+        (ok, pending, failed, idle)
     }
 
     pub fn last_refresh_age(&self) -> Duration {

@@ -3,8 +3,12 @@
 Terminal dashboard for Databricks — monitor clusters, jobs, pipelines, and SQL warehouses in one view.
 
 - Four color-coded panes that populate independently as each data source responds
-- Zoom into any pane for a full-screen view
-- Non-blocking background refresh with a live spinner — the UI never freezes
+- Jobs show their latest run result and a `✓✗✓` history strip, not just the config
+- Health summary in the header: running / pending / failed / idle counts at a glance
+- Drill into any item: formatted key facts and recent activity, raw JSON one key away
+- Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
+- Jump to any resource in the workspace web UI with one key
+- Zoom into any pane, light/dark theme, non-blocking refresh — the UI never freezes
 - Built-in self-upgrade from GitHub releases
 
 ## Install
@@ -66,7 +70,9 @@ them can be slow on busy workspaces.
 | `Tab` / `→` / `l` | Focus next panel |
 | `Shift+Tab` / `←` / `h` | Focus previous panel |
 | `↓` / `j`, `↑` / `k` | Select item in focused panel |
-| `Enter` | Open full details for the selected item |
+| `Enter` | Open details for the selected item |
+| `s` | Action on selected item (start/stop, run job) — asks to confirm |
+| `o` | Open selected item in the workspace web UI |
 | `z` | Zoom focused panel to full screen |
 | `Esc` | Close details / exit zoom |
 | `t` | Toggle light/dark theme |
@@ -74,7 +80,8 @@ them can be slow on busy workspaces.
 | `q` / `Ctrl+C` | Quit |
 
 Navigation works while zoomed — `Tab`/`h`/`l` jumps straight to the next
-panel full-screen. In the details view, `j`/`k` scroll and `Esc` goes back.
+panel full-screen. In the details view, `j`/`k` scroll, `J` toggles the raw
+JSON, `o` opens the browser, and `Esc` goes back.
 
 ## Requirements
 

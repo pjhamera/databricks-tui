@@ -13,6 +13,7 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
                     status: p["state"].as_str().unwrap_or("").parse().unwrap(),
                     detail: p["pipeline_id"].as_str().map(str::to_string),
                     id: p["pipeline_id"].as_str().map(str::to_string),
+                    history: Vec::new(),
                 })
                 .collect()
         })

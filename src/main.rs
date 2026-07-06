@@ -142,9 +142,20 @@ async fn run(
     terminal.draw(|f| ui::draw(f, app))?;
     let mut last_tick = Instant::now();
 
+    // Workspace host for "open in browser"; auth describe works even offline.
+    if let Ok(json) = cli.run(&["auth", "describe"]).await {
+        app.host = json["details"]["host"]
+            .as_str()
+            .or_else(|| json["host"].as_str())
+            .map(str::to_string);
+    }
+
     loop {
         let mut needs_redraw = app.poll_refresh();
         if app.poll_detail() {
+            needs_redraw = true;
+        }
+        if app.poll_action(cli) {
             needs_redraw = true;
         }
 
@@ -152,6 +163,9 @@ async fn run(
         if last_tick.elapsed() >= Duration::from_secs(1) {
             last_tick = Instant::now();
             needs_redraw = true;
+            if app.expire_flash() {
+                needs_redraw = true;
+            }
         }
 
         if app.needs_refresh() {
@@ -168,7 +182,19 @@ async fn run(
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if app.detail.is_some() {
+                if app.confirm.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('y') | KeyCode::Char('Y'), _) => {
+                            app.confirm_execute(cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        _ => {
+                            app.cancel_confirm();
+                            needs_redraw = true;
+                        }
+                    }
+                } else if app.detail.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             break
@@ -184,6 +210,13 @@ async fn run(
                         (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                             app.detail_scroll(-1);
                             needs_redraw = true;
+                        }
+                        (KeyCode::Char('J'), _) => {
+                            app.toggle_raw();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('o'), _) => {
+                            app.open_in_browser();
                         }
                         _ => {}
                     }
@@ -211,6 +244,13 @@ async fn run(
                         (KeyCode::Enter, _) => {
                             app.open_detail(cli);
                             needs_redraw = true;
+                        }
+                        (KeyCode::Char('s'), _) => {
+                            app.request_action();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('o'), _) => {
+                            app.open_in_browser();
                         }
                         (KeyCode::Char('r'), _) => {
                             app.start_refresh(cli);

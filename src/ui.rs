@@ -158,22 +158,50 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         .border_style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
         .padding(Padding::horizontal(1));
 
-    match &d.content {
-        None => {
-            let par = Paragraph::new(format!("{} Loading…", app.spinner()))
-                .style(Style::default().fg(p.warn))
-                .block(block);
-            f.render_widget(par, area);
-        }
-        Some(text) => {
-            let par = Paragraph::new(text.as_str())
-                .style(Style::default().fg(p.text))
-                .wrap(Wrap { trim: false })
-                .scroll((d.scroll, 0))
-                .block(block);
-            f.render_widget(par, area);
+    let Some(data) = &d.data else {
+        let par = Paragraph::new(format!("{} Loading…", app.spinner()))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+        f.render_widget(par, area);
+        return;
+    };
+
+    // Fall back to raw when there's nothing structured to show (e.g. errors).
+    if d.show_raw || data.summary.is_empty() {
+        let par = Paragraph::new(data.raw.as_str())
+            .style(Style::default().fg(p.text))
+            .wrap(Wrap { trim: false })
+            .scroll((d.scroll, 0))
+            .block(block);
+        f.render_widget(par, area);
+        return;
+    }
+
+    let mut lines: Vec<Line> = data
+        .summary
+        .iter()
+        .map(|(k, v)| {
+            Line::from(vec![
+                Span::styled(format!("{:<16}", k), Style::default().fg(p.dim)),
+                Span::styled(v.as_str(), Style::default().fg(p.text)),
+            ])
+        })
+        .collect();
+    if !data.activity.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "Recent activity",
+            Style::default().fg(acc).add_modifier(Modifier::BOLD),
+        )));
+        for (status, text) in &data.activity {
+            lines.push(Line::from(vec![
+                Span::styled("● ", Style::default().fg(status_color(status, p))),
+                Span::styled(text.as_str(), Style::default().fg(p.text)),
+            ]));
         }
     }
+    let par = Paragraph::new(lines).scroll((d.scroll, 0)).block(block);
+    f.render_widget(par, area);
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -211,6 +239,23 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+
+    // Workspace health at a glance: counts of items per status bucket.
+    let (ok, pending, failed, idle) = app.status_counts();
+    for (count, glyph, color) in [
+        (ok, "●", p.ok),
+        (pending, "◐", p.warn),
+        (failed, "✗", p.err),
+        (idle, "○", p.dim),
+    ] {
+        if count > 0 {
+            left.push(Span::styled("  ", Style::default()));
+            left.push(Span::styled(
+                format!("{glyph} {count}"),
+                Style::default().fg(color),
+            ));
+        }
+    }
     f.render_widget(Paragraph::new(Line::from(left)), inner);
 
     let right = if app.loading {
@@ -231,6 +276,27 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let key =
         |k: &'static str| Span::styled(k, Style::default().fg(p.key).add_modifier(Modifier::BOLD));
     let dim = |t: &'static str| Span::styled(t, Style::default().fg(p.dim));
+
+    if let Some(confirm) = &app.confirm {
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" ⚠ {} ", confirm.message),
+                Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+            ),
+            key("y"),
+            dim(" confirm · any other key cancels"),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
+    if let Some((msg, _)) = &app.flash {
+        let color = if msg.starts_with('✗') { p.err } else { p.ok };
+        let line = Line::from(Span::styled(format!(" {msg}"), Style::default().fg(color)));
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
     let spans = if app.detail.is_some() {
         vec![
             dim(" "),
@@ -240,6 +306,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim("/"),
             key("k"),
             dim(" scroll   "),
+            key("J"),
+            dim(" raw   "),
+            key("o"),
+            dim(" open   "),
             key("q"),
             dim(" quit"),
         ]
@@ -258,6 +328,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" select   "),
             key("enter"),
             dim(" details   "),
+            key("s"),
+            dim(" action   "),
+            key("o"),
+            dim(" open   "),
             key("z"),
             dim(if app.zoomed { " unzoom   " } else { " zoom   " }),
             key("t"),
@@ -333,6 +407,15 @@ fn draw_panel(
                             Style::default().fg(color).add_modifier(Modifier::DIM),
                         ),
                     ];
+                    if !item.history.is_empty() {
+                        spans.push(Span::raw("  "));
+                        for run in &item.history {
+                            spans.push(Span::styled(
+                                history_glyph(run),
+                                Style::default().fg(status_color(run, p)),
+                            ));
+                        }
+                    }
                     if let Some(detail) = &item.detail {
                         spans.push(Span::styled(
                             format!("  {}", detail),
@@ -393,10 +476,21 @@ fn draw_panel(
 
 fn status_color(status: &Status, p: &Palette) -> Color {
     match status {
-        Status::Running => p.ok,
+        Status::Running | Status::Success => p.ok,
         Status::Stopped => p.dim,
         Status::Pending => p.warn,
         Status::Failed => p.err,
         Status::Unknown(_) => p.text,
+    }
+}
+
+fn history_glyph(status: &Status) -> &'static str {
+    match status {
+        Status::Success => "✓",
+        Status::Failed => "✗",
+        Status::Running => "●",
+        Status::Pending => "◐",
+        Status::Stopped => "○",
+        Status::Unknown(_) => "·",
     }
 }
