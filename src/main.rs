@@ -146,15 +146,11 @@ async fn run(
     terminal.draw(|f| ui::draw(f, app))?;
     let mut last_tick = Instant::now();
 
-    // Workspace host for "open in browser"; auth describe works even offline.
-    if let Ok(json) = cli.run(&["auth", "describe"]).await {
-        app.host = json["details"]["host"]
-            .as_str()
-            .or_else(|| json["host"].as_str())
-            .map(str::to_string);
-    }
+    // Workspace host for "open in browser", resolved in the background.
+    app.fetch_host(cli);
 
     loop {
+        app.poll_host();
         let mut needs_redraw = app.poll_refresh();
         if app.poll_detail() {
             needs_redraw = true;

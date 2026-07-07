@@ -5,7 +5,14 @@ use serde_json::Value;
 /// Fetches the full detail view for one resource: key facts, recent
 /// activity, and the raw JSON. Never fails — errors land in `raw`.
 pub async fn fetch(cli: &DatabricksCli, group: &str, id: &str) -> DetailData {
-    let main = cli.run(&[group, "get", id]).await;
+    // The activity call is independent of `get` — run them concurrently.
+    let get_args = [group, "get", id];
+    let get = cli.run(&get_args);
+    let (main, mut activity) = match group {
+        "clusters" => tokio::join!(get, cluster_events(cli, id)),
+        "jobs" => tokio::join!(get, job_runs(cli, id)),
+        _ => (get.await, Vec::new()),
+    };
     let json = match main {
         Ok(v) => v,
         Err(e) => {
@@ -18,11 +25,14 @@ pub async fn fetch(cli: &DatabricksCli, group: &str, id: &str) -> DetailData {
     };
     let raw = serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
 
-    let (summary, activity) = match group {
-        "clusters" => (cluster_summary(&json), cluster_events(cli, id).await),
-        "jobs" => (job_summary(&json), job_runs(cli, id).await),
-        "pipelines" => (pipeline_summary(&json), pipeline_updates(&json)),
-        _ => (warehouse_summary(&json), Vec::new()),
+    let summary = match group {
+        "clusters" => cluster_summary(&json),
+        "jobs" => job_summary(&json),
+        "pipelines" => {
+            activity = pipeline_updates(&json);
+            pipeline_summary(&json)
+        }
+        _ => warehouse_summary(&json),
     };
 
     DetailData {

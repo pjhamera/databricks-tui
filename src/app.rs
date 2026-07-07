@@ -107,6 +107,7 @@ pub struct App {
     pending: Option<mpsc::UnboundedReceiver<Update>>,
     detail_rx: Option<oneshot::Receiver<DetailData>>,
     action_rx: Option<oneshot::Receiver<Result<String, String>>>,
+    host_rx: Option<oneshot::Receiver<Option<String>>>,
     in_flight: usize,
     spinner_frame: usize,
 }
@@ -133,8 +134,41 @@ impl App {
             pending: None,
             detail_rx: None,
             action_rx: None,
+            host_rx: None,
             in_flight: 0,
             spinner_frame: 0,
+        }
+    }
+
+    /// Resolves the workspace host in the background — `auth describe` can
+    /// take seconds when it refreshes tokens, so it must not block the loop.
+    pub fn fetch_host(&mut self, cli: &Arc<DatabricksCli>) {
+        let (tx, rx) = oneshot::channel();
+        self.host_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let host = cli.run(&["auth", "describe"]).await.ok().and_then(|json| {
+                json["details"]["host"]
+                    .as_str()
+                    .or_else(|| json["host"].as_str())
+                    .map(str::to_string)
+            });
+            let _ = tx.send(host);
+        });
+    }
+
+    pub fn poll_host(&mut self) {
+        if let Some(rx) = &mut self.host_rx {
+            match rx.try_recv() {
+                Ok(host) => {
+                    self.host = host;
+                    self.host_rx = None;
+                }
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    self.host_rx = None;
+                }
+            }
         }
     }
 
