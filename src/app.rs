@@ -83,7 +83,7 @@ pub struct Confirm {
 }
 
 enum Update {
-    Panel(usize, Option<Shape>),
+    Panel(usize, Result<Shape, String>),
     Badge(Option<Shape>),
 }
 
@@ -427,6 +427,12 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
+    /// True whenever any background work is in flight — the loop uses this
+    /// to keep spinners ticking, not just during panel refreshes.
+    pub fn busy(&self) -> bool {
+        self.loading || self.detail_rx.is_some() || self.action_rx.is_some()
+    }
+
     pub fn tick_spinner(&mut self) {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
@@ -474,7 +480,7 @@ impl App {
                 let cli = Arc::clone(cli);
                 let tx = tx.clone();
                 tokio::spawn(async move {
-                    let result = $fetch(&cli).await.ok();
+                    let result = $fetch(&cli).await.map_err(|e| format!("{e:#}"));
                     let _ = tx.send($update(result));
                 });
             }};
@@ -484,7 +490,10 @@ impl App {
         spawn_fetch!(|s| Update::Panel(1, s), fetchers::jobs::fetch);
         spawn_fetch!(|s| Update::Panel(2, s), fetchers::pipelines::fetch);
         spawn_fetch!(|s| Update::Panel(3, s), fetchers::warehouses::fetch);
-        spawn_fetch!(Update::Badge, fetchers::current_user::fetch);
+        spawn_fetch!(
+            |s: Result<Shape, String>| Update::Badge(s.ok()),
+            fetchers::current_user::fetch
+        );
     }
 
     /// Applies any fetch results that have arrived; returns true if the UI should redraw.
@@ -495,10 +504,16 @@ impl App {
         let mut changed = false;
         loop {
             match rx.try_recv() {
-                // Keep the previous data when a fetch fails so panels don't blank out.
-                Ok(Update::Panel(i, shape)) => {
-                    if shape.is_some() {
-                        self.shapes[i] = shape;
+                Ok(Update::Panel(i, result)) => {
+                    match result {
+                        Ok(shape) => self.shapes[i] = Some(shape),
+                        // Keep previous data on failure so panels don't blank
+                        // out — but surface the error if there's nothing yet.
+                        Err(e) => {
+                            if matches!(self.shapes[i], None | Some(Shape::Text(_))) {
+                                self.shapes[i] = Some(Shape::Text(format!("✗ {e}")));
+                            }
+                        }
                     }
                     self.in_flight -= 1;
                     changed = true;

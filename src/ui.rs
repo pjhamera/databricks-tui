@@ -466,8 +466,10 @@ fn draw_panel(
             f.render_widget(par, area);
         }
         Some(Shape::Text(t)) => {
+            let color = if t.starts_with('✗') { p.err } else { p.text };
             let par = Paragraph::new(t.as_str())
-                .style(Style::default().fg(p.text))
+                .style(Style::default().fg(color))
+                .wrap(Wrap { trim: false })
                 .block(block);
             f.render_widget(par, area);
         }

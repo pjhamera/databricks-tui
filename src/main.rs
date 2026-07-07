@@ -173,8 +173,8 @@ async fn run(
             needs_redraw = true;
         }
 
-        // Poll faster while loading so the spinner animates smoothly.
-        let timeout = if app.loading {
+        // Poll faster while anything is loading so spinners animate smoothly.
+        let timeout = if app.busy() {
             Duration::from_millis(100)
         } else {
             Duration::from_millis(250)
@@ -274,7 +274,7 @@ async fn run(
             }
         }
 
-        if app.loading {
+        if app.busy() {
             app.tick_spinner();
             needs_redraw = true;
         }
