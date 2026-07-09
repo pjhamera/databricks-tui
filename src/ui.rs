@@ -10,6 +10,7 @@ use ratatui::{
     },
     Frame,
 };
+use std::time::Duration;
 
 struct Palette {
     text: Color,
@@ -73,6 +74,12 @@ fn accent(panel: Panel, p: &Palette) -> Color {
 
 pub fn draw(f: &mut Frame, app: &App) {
     let p = palette(app.theme);
+
+    if app.splash_active() {
+        draw_splash(f, f.area(), app, &p);
+        return;
+    }
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -102,6 +109,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.shapes[idx].as_ref(),
             true,
             Some(app.selection(idx)),
+            false,
             app.spinner(),
             &p,
         );
@@ -133,6 +141,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         let focused = app.focus == *panel;
         let shape = app.shapes[i].as_ref();
         let selected = focused.then(|| app.selection(i));
+        let fresh = app.updated_at[i]
+            .map(|t| t.elapsed() < Duration::from_millis(1200))
+            .unwrap_or(false);
         draw_panel(
             f,
             areas[i],
@@ -140,6 +151,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             shape,
             focused,
             selected,
+            fresh,
             app.spinner(),
             &p,
         );
@@ -147,6 +159,83 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.picker.is_some() {
         draw_picker(f, root[1], app, &p);
+    }
+}
+
+const WORDMARK_TOP: &str = "█▀▄ ▄▀█ ▀█▀ ▄▀█ █▄▄ █▀█ █ █▀▀ █▄▀ █▀";
+const WORDMARK_BOT: &str = "█▄▀ █▀█  █  █▀█ █▄█ █▀▄ █ █▄▄ █ █ ▄█";
+
+fn draw_splash(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let lines_total = 9u16;
+    let top = area.y + (area.height.saturating_sub(lines_total)) / 2;
+    let frame = app.spinner_frame();
+
+    // Brick-mark pyramid in Databricks red.
+    let bricks = ["◢◤", "◢◤ ◢◤", "◢◤ ◢◤ ◢◤"];
+    for (i, row) in bricks.iter().enumerate() {
+        let line = Line::from(Span::styled(
+            *row,
+            Style::default().fg(p.brand).add_modifier(Modifier::BOLD),
+        ));
+        let rect = Rect {
+            x: area.x,
+            y: top + i as u16,
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Center), rect);
+    }
+
+    // Wordmark with a light sweep that travels across the letters.
+    let sweep = (frame * 2) % (WORDMARK_TOP.chars().count() + 16);
+    for (row, text) in [(4u16, WORDMARK_TOP), (5u16, WORDMARK_BOT)] {
+        let spans: Vec<Span> = text
+            .chars()
+            .enumerate()
+            .map(|(i, c)| {
+                let dist = (i as i32 - sweep as i32 + 8).unsigned_abs();
+                let style = if dist < 3 {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.brand)
+                };
+                Span::styled(c.to_string(), style)
+            })
+            .collect();
+        let rect = Rect {
+            x: area.x,
+            y: top + row,
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+            rect,
+        );
+    }
+
+    let tagline = Line::from(vec![
+        Span::styled("the ", Style::default().fg(p.dim)),
+        Span::styled(
+            "Lakehouse",
+            Style::default().fg(p.key).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" in your terminal", Style::default().fg(p.dim)),
+    ]);
+    let version = Line::from(Span::styled(
+        format!("v{}", env!("CARGO_PKG_VERSION")),
+        Style::default().fg(p.dim),
+    ));
+    for (offset, line) in [(7u16, tagline), (8u16, version)] {
+        let rect = Rect {
+            x: area.x,
+            y: top + offset,
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Center), rect);
     }
 }
 
@@ -273,14 +362,27 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let brand_style = if app.loading {
+        // Pulse the brick mark while data is on its way.
+        Style::default()
+            .fg(p.brand)
+            .add_modifier(if app.spinner_frame().is_multiple_of(2) {
+                Modifier::BOLD
+            } else {
+                Modifier::DIM
+            })
+    } else {
+        Style::default().fg(p.brand)
+    };
     let mut left = vec![
-        Span::styled(" ◢◤ ", Style::default().fg(p.brand)),
+        Span::styled(" ◢◤ ", brand_style),
         Span::styled(
             "Databricks",
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ),
+        Span::styled(" Lakehouse", Style::default().fg(p.key)),
         Span::styled(
-            format!(" TUI v{}", env!("CARGO_PKG_VERSION")),
+            format!(" · v{}", env!("CARGO_PKG_VERSION")),
             Style::default().fg(p.dim),
         ),
     ];
@@ -433,6 +535,7 @@ fn draw_panel(
     shape: Option<&Shape>,
     focused: bool,
     selected: Option<usize>,
+    fresh: bool,
     spinner: &str,
     p: &Palette,
 ) {
@@ -450,6 +553,15 @@ fn draw_panel(
         Some(Shape::Table(data)) => format!(" · {}", data.rows.len()),
         _ => String::new(),
     };
+    // A short reversed flash on the title when fresh data lands.
+    let title_style = if fresh {
+        Style::default()
+            .bg(accent)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        title_style
+    };
     let title = Line::from(vec![
         Span::styled(format!(" {} ", panel.icon()), Style::default().fg(accent)),
         Span::styled(format!("{}{} ", panel.title(), count), title_style),
@@ -457,19 +569,30 @@ fn draw_panel(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(if focused {
+            BorderType::Thick
+        } else {
+            BorderType::Rounded
+        })
         .border_style(border_style)
         .padding(Padding::horizontal(1));
 
     match shape {
         None => {
-            let par = Paragraph::new(format!("{} Loading…", spinner))
+            let par = Paragraph::new(format!("{} syncing with the lakehouse…", spinner))
                 .style(Style::default().fg(p.warn))
                 .block(block);
             f.render_widget(par, area);
         }
         Some(Shape::List(items)) if items.is_empty() => {
-            let par = Paragraph::new("— none —")
+            let empty = match panel {
+                Panel::Clusters => "no compute running",
+                Panel::Jobs => "no jobs defined",
+                Panel::Pipelines => "no pipelines",
+                Panel::Warehouses => "no warehouses",
+                Panel::Dashboards => "no dashboards yet",
+            };
+            let par = Paragraph::new(format!("∅ {empty}"))
                 .style(Style::default().fg(p.dim))
                 .block(block);
             f.render_widget(par, area);
@@ -479,13 +602,24 @@ fn draw_panel(
                 .iter()
                 .map(|item| {
                     let color = status_color(&item.status, p);
+                    let chip = match item.status {
+                        Status::Stopped | Status::Unknown(_) => Span::styled(
+                            format!(" {} ", item.status.label()),
+                            Style::default().fg(color).add_modifier(Modifier::DIM),
+                        ),
+                        _ => Span::styled(
+                            format!(" {} ", item.status.label()),
+                            Style::default()
+                                .bg(color)
+                                .fg(Color::Black)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    };
                     let mut spans = vec![
                         Span::styled("● ", Style::default().fg(color)),
                         Span::styled(item.name.as_str(), Style::default().fg(p.text)),
-                        Span::styled(
-                            format!("  {}", item.status.label()),
-                            Style::default().fg(color).add_modifier(Modifier::DIM),
-                        ),
+                        Span::raw("  "),
+                        chip,
                     ];
                     if !item.history.is_empty() {
                         spans.push(Span::raw("  "));

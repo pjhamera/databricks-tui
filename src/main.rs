@@ -161,6 +161,14 @@ async fn run(
             needs_redraw = true;
         }
 
+        // Splash: animate fast, expire on its deadline.
+        if let Some(t) = app.splash_until {
+            needs_redraw = true;
+            if Instant::now() >= t {
+                app.splash_until = None;
+            }
+        }
+
         // Redraw once a second while idle so the "updated Ns ago" counter stays live.
         if last_tick.elapsed() >= Duration::from_secs(1) {
             last_tick = Instant::now();
@@ -176,7 +184,9 @@ async fn run(
         }
 
         // Poll faster while anything is loading so spinners animate smoothly.
-        let timeout = if app.busy() {
+        let timeout = if app.splash_active() {
+            Duration::from_millis(70)
+        } else if app.busy() || app.any_fresh() {
             Duration::from_millis(100)
         } else {
             Duration::from_millis(250)
@@ -184,7 +194,17 @@ async fn run(
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if app.confirm.is_some() {
+                if app.splash_active() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        _ => {
+                            app.dismiss_splash();
+                            needs_redraw = true;
+                        }
+                    }
+                } else if app.confirm.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('y') | KeyCode::Char('Y'), _) => {
                             app.confirm_execute(&cli);
@@ -307,8 +327,11 @@ async fn run(
             }
         }
 
-        if app.busy() {
+        if app.busy() || app.splash_active() {
             app.tick_spinner();
+            needs_redraw = true;
+        }
+        if app.any_fresh() {
             needs_redraw = true;
         }
 

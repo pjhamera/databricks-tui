@@ -40,11 +40,11 @@ impl Panel {
 
     pub fn title(&self) -> &'static str {
         match self {
-            Panel::Clusters => "Clusters",
-            Panel::Jobs => "Jobs",
-            Panel::Pipelines => "Pipelines",
-            Panel::Warehouses => "Warehouses",
-            Panel::Dashboards => "Dashboards",
+            Panel::Clusters => "Compute",
+            Panel::Jobs => "Lakeflow Jobs",
+            Panel::Pipelines => "Lakeflow Pipelines",
+            Panel::Warehouses => "SQL Warehouses",
+            Panel::Dashboards => "AI/BI Dashboards",
         }
     }
 
@@ -120,6 +120,10 @@ pub struct App {
     host_rx: Option<oneshot::Receiver<Option<String>>>,
     in_flight: usize,
     spinner_frame: usize,
+    /// Splash screen deadline; None once dismissed.
+    pub splash_until: Option<Instant>,
+    /// When each pane last received fresh data — drives the title flash.
+    pub updated_at: [Option<Instant>; 5],
 }
 
 impl App {
@@ -150,7 +154,27 @@ impl App {
             host_rx: None,
             in_flight: 0,
             spinner_frame: 0,
+            splash_until: Some(Instant::now() + Duration::from_millis(1600)),
+            updated_at: [None; 5],
         }
+    }
+
+    pub fn splash_active(&self) -> bool {
+        self.splash_until
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    pub fn dismiss_splash(&mut self) {
+        self.splash_until = None;
+    }
+
+    /// True while any pane's data just landed — keeps the flash decaying.
+    pub fn any_fresh(&self) -> bool {
+        self.updated_at
+            .iter()
+            .flatten()
+            .any(|t| t.elapsed() < Duration::from_millis(1200))
     }
 
     pub fn open_picker(&mut self) {
@@ -496,6 +520,10 @@ impl App {
         SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()]
     }
 
+    pub fn spinner_frame(&self) -> usize {
+        self.spinner_frame
+    }
+
     /// True whenever any background work is in flight — the loop uses this
     /// to keep spinners ticking, not just during panel refreshes.
     pub fn busy(&self) -> bool {
@@ -576,7 +604,10 @@ impl App {
             match rx.try_recv() {
                 Ok(Update::Panel(i, result)) => {
                     match result {
-                        Ok(shape) => self.shapes[i] = Some(shape),
+                        Ok(shape) => {
+                            self.shapes[i] = Some(shape);
+                            self.updated_at[i] = Some(Instant::now());
+                        }
                         // Keep previous data on failure so panels don't blank
                         // out — but surface the error if there's nothing yet.
                         Err(e) => {

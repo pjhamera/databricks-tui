@@ -2,7 +2,10 @@
 
 Terminal dashboard for Databricks — monitor clusters, jobs, pipelines, and SQL warehouses in one view.
 
-- Four color-coded panes that populate independently as each data source responds
+- Animated splash screen and a Databricks-branded look: product-named panes
+  (Compute, Lakeflow, SQL Warehouses, AI/BI Dashboards), status chips, and
+  refresh flashes when new data lands
+- Five color-coded panes that populate independently as each data source responds
 - Jobs show their latest run result and a `✓✗✓` history strip, not just the config
 - Health summary in the header: running / pending / failed / idle counts at a glance
 - Drill into any item: formatted key facts and recent activity, raw JSON one key away
