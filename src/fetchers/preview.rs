@@ -9,10 +9,18 @@ async fn diagnose(cli: &DatabricksCli, warehouse_id: &str, base_err: String) -> 
     match cli.run(&["warehouses", "get", warehouse_id]).await {
         Ok(j) => {
             let state = j["state"].as_str().unwrap_or("unknown");
+            let wtype = j["warehouse_type"].as_str().unwrap_or("unknown");
+            let serverless = j["enable_serverless_compute"]
+                .as_bool()
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             format!(
                 "{base_err}\n\ndiagnostic: warehouse {warehouse_id} DOES exist in this \
-                 workspace (state: {state}), yet the SQL Statements API rejected it — \
-                 this is usually a missing CAN USE permission on the warehouse for your user"
+                 workspace (state: {state}, type: {wtype}, serverless: {serverless}), yet \
+                 the SQL Statements API rejected it — check CAN USE permission, or try \
+                 running the same query with the CLI directly:\n  databricks api post \
+                 /api/2.0/sql/statements --json \
+                 '{{\"statement\":\"SELECT 1\",\"warehouse_id\":\"{warehouse_id}\"}}'"
             )
         }
         Err(e) => format!(
