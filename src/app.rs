@@ -105,6 +105,7 @@ pub struct Preview {
 enum PickTarget {
     Preview(String),
     Cost,
+    Lineage(String),
 }
 
 /// Overlay for choosing which SQL warehouse runs a query.
@@ -550,6 +551,69 @@ impl App {
         });
     }
 
+    /// Opens the lineage view for the selected table/view; needs a
+    /// warehouse since lineage lives in system tables.
+    pub fn open_lineage(&mut self, cli: &Arc<DatabricksCli>) {
+        if self.focus != Panel::Catalog {
+            return;
+        }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        if !matches!(&item.status, Status::Unknown(k) if k == "TABLE" || k == "VIEW") {
+            return;
+        }
+        let Some(full_name) = item.id.clone() else {
+            return;
+        };
+        let warehouses = self.warehouses();
+        if warehouses.is_empty() {
+            self.flash = Some((
+                "✗ no SQL warehouse available to query lineage".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if let Some((id, _)) = self.preview_warehouse.clone() {
+            self.start_lineage_query(cli, full_name, id);
+            return;
+        }
+        if let [(name, id, _)] = warehouses.as_slice() {
+            self.preview_warehouse = Some((id.clone(), name.clone()));
+            let id = id.clone();
+            self.start_lineage_query(cli, full_name, id);
+            return;
+        }
+        let index = warehouses
+            .iter()
+            .position(|(_, _, running)| *running)
+            .unwrap_or(0);
+        self.wh_picker = Some(WhPicker {
+            index,
+            target: PickTarget::Lineage(full_name),
+        });
+    }
+
+    fn start_lineage_query(&mut self, cli: &Arc<DatabricksCli>, full_name: String, wh_id: String) {
+        self.detail = Some(Detail {
+            panel: Panel::Catalog,
+            name: full_name.clone(),
+            id: full_name.clone(),
+            kind: None,
+            section: "Lineage",
+            data: None,
+            show_raw: false,
+            scroll: 0,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.detail_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let data = fetchers::lineage::fetch(&cli, &full_name, &wh_id).await;
+            let _ = tx.send(data);
+        });
+    }
+
     pub fn close_cost(&mut self) {
         self.cost = None;
         self.cost_rx = None;
@@ -610,6 +674,7 @@ impl App {
                 self.start_preview_query(cli, table, id.clone(), name.clone())
             }
             PickTarget::Cost => self.start_cost_query(cli, id.clone(), name.clone()),
+            PickTarget::Lineage(table) => self.start_lineage_query(cli, table, id.clone()),
         }
     }
 

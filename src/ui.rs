@@ -438,21 +438,34 @@ fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
 
             // Legend with per-bucket totals, largest first.
             let mut legend = vec![Span::raw("")];
-            for (bucket, total) in &data.buckets {
+            for (bucket, total, usd) in &data.buckets {
                 legend.push(Span::styled(
                     "■ ",
                     Style::default().fg(bucket_color(bucket, p)),
                 ));
-                legend.push(Span::styled(
-                    format!("{bucket} {total:.1}   "),
-                    Style::default().fg(p.text),
-                ));
+                let amount = if data.priced {
+                    format!("{bucket} {total:.1} (${usd:.0})   ")
+                } else {
+                    format!("{bucket} {total:.1}   ")
+                };
+                legend.push(Span::styled(amount, Style::default().fg(p.text)));
             }
+            let sigma = if data.priced {
+                format!("Σ {:.1} DBU ≈ ${:.2}", data.total, data.total_usd)
+            } else {
+                format!("Σ {:.1} DBU", data.total)
+            };
             legend.push(Span::styled(
-                format!("Σ {:.1} DBU", data.total),
+                sigma,
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
             ));
             lines.push(Line::from(legend));
+            if data.priced {
+                lines.push(Line::from(Span::styled(
+                    " list prices before discounts",
+                    Style::default().fg(p.dim),
+                )));
+            }
             lines.push(Line::default());
 
             let max_day = data
@@ -480,10 +493,12 @@ fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                         Style::default().fg(bucket_color(bucket, p)),
                     ));
                 }
-                spans.push(Span::styled(
-                    format!("  {:.1}", day.total),
-                    Style::default().fg(p.text),
-                ));
+                let day_label = if data.priced {
+                    format!("  {:.1} · ${:.2}", day.total, day.total_usd)
+                } else {
+                    format!("  {:.1}", day.total)
+                };
+                spans.push(Span::styled(day_label, Style::default().fg(p.text)));
                 lines.push(Line::from(spans));
             }
 
@@ -840,6 +855,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 if app.uc_path.len() == 2 {
                     spans.push(key("p"));
                     spans.push(dim(" preview   "));
+                    spans.push(key("L"));
+                    spans.push(dim(" lineage   "));
                 }
             }
             Panel::Dashboards => {}

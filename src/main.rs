@@ -380,6 +380,10 @@ async fn run(
                             app.open_cost(&cli);
                             needs_redraw = true;
                         }
+                        (KeyCode::Char('L'), _) => {
+                            app.open_lineage(&cli);
+                            needs_redraw = true;
+                        }
                         (KeyCode::Char('P'), _) => {
                             app.open_preview(&cli, true);
                             needs_redraw = true;

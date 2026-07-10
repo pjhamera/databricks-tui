@@ -14,7 +14,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   workspace object ACLs for any selected item
 - Warehouse details include recent query history: who ran what, how long
 - DBU usage view: 14 days of system.billing.usage as color-stacked daily
-  bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT)
+  bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT), with
+  list-price dollar estimates when system.billing.list_prices is readable
+- Table lineage: upstream and downstream tables for any table/view, from
+  system.access.table_lineage
 - Jump to any resource in the workspace web UI with one key
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
@@ -86,6 +89,7 @@ them can be slow on busy workspaces.
 | `Enter` | Open details for the selected item (drills down in Unity Catalog) |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse) |
+| `L` | Lineage: upstream/downstream tables for the selected table/view |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
 | `g` | Show access: effective grants / permissions for the selected item |

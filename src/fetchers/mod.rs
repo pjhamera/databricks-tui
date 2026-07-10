@@ -6,6 +6,7 @@ pub mod dashboards;
 pub mod detail;
 pub mod grants;
 pub mod jobs;
+pub mod lineage;
 pub mod pipelines;
 pub mod preview;
 pub mod warehouses;
