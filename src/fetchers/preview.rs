@@ -50,15 +50,25 @@ fn error_of(resp: &Value) -> String {
         .to_string()
 }
 
-/// Runs `SELECT * LIMIT 50` on the given warehouse via the Statement
-/// Execution API and shapes the result for the table renderer.
+/// Runs `SELECT * LIMIT 50` on the given warehouse.
 pub async fn fetch(
     cli: &DatabricksCli,
     full_name: &str,
     warehouse_id: &str,
 ) -> Result<TableData, String> {
+    let sql = format!("SELECT * FROM {} LIMIT 50", quoted(full_name));
+    run_sql(cli, &sql, warehouse_id).await
+}
+
+/// Runs arbitrary SQL on the given warehouse via the Statement Execution
+/// API and shapes the result as a table.
+pub async fn run_sql(
+    cli: &DatabricksCli,
+    sql: &str,
+    warehouse_id: &str,
+) -> Result<TableData, String> {
     let payload = serde_json::json!({
-        "statement": format!("SELECT * FROM {} LIMIT 50", quoted(full_name)),
+        "statement": sql,
         "warehouse_id": warehouse_id,
         "wait_timeout": "30s",
         "disposition": "INLINE",

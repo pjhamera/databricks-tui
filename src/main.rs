@@ -166,6 +166,9 @@ async fn run(
         if app.poll_preview() {
             needs_redraw = true;
         }
+        if app.poll_cost() {
+            needs_redraw = true;
+        }
 
         // Splash: animate fast, expire on its deadline.
         if let Some(t) = app.splash_until {
@@ -272,6 +275,17 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.cost.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        (KeyCode::Esc, _) => {
+                            app.close_cost();
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
                 } else if app.preview.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -360,6 +374,10 @@ async fn run(
                         }
                         (KeyCode::Char('g'), _) => {
                             app.open_grants(&cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('$'), _) => {
+                            app.open_cost(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Char('P'), _) => {

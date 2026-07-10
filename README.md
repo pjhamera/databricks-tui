@@ -13,6 +13,8 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
 - Warehouse details include recent query history: who ran what, how long
+- DBU usage view: 14 days of system.billing.usage as color-stacked daily
+  bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT)
 - Jump to any resource in the workspace web UI with one key
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
@@ -87,6 +89,7 @@ them can be slow on busy workspaces.
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
 | `g` | Show access: effective grants / permissions for the selected item |
+| `$` | DBU usage for the last 14 days (queries system tables on a warehouse) |
 | `o` | Open selected item in the workspace web UI |
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |

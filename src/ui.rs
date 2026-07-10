@@ -96,6 +96,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_header(f, root[0], app, &p);
     draw_footer(f, root[2], app, &p);
 
+    if app.cost.is_some() {
+        draw_cost(f, root[1], app, &p);
+        return;
+    }
+
     if app.preview.is_some() {
         draw_preview(f, root[1], app, &p);
         return;
@@ -375,6 +380,119 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     f.render_stateful_widget(list, popup, &mut state);
 }
 
+fn bucket_color(bucket: &str, p: &Palette) -> Color {
+    match bucket {
+        "Jobs" => p.jobs,
+        "SQL" => p.warehouses,
+        "All-Purpose" => p.clusters,
+        "DLT" => p.pipelines,
+        _ => p.dim,
+    }
+}
+
+fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let cv = app.cost.as_ref().unwrap();
+    let title = Line::from(vec![
+        Span::styled(" ◢◤ ", Style::default().fg(p.brand)),
+        Span::styled(
+            "Usage · last 14 days ",
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("via {} ", cv.warehouse), Style::default().fg(p.dim)),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.brand).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 1));
+
+    match &cv.data {
+        None => {
+            let par = Paragraph::new(format!(
+                "{} querying system.billing.usage — the warehouse may need to start…",
+                app.spinner()
+            ))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!(
+                "✗ {e}\n\nsystem tables need to be enabled and readable \
+                 (grants on the `system` catalog)"
+            ))
+            .style(Style::default().fg(p.err))
+            .wrap(Wrap { trim: false })
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(data)) if data.days.is_empty() => {
+            let par = Paragraph::new("∅ no usage recorded in the last 14 days")
+                .style(Style::default().fg(p.dim))
+                .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(data)) => {
+            let mut lines: Vec<Line> = Vec::new();
+
+            // Legend with per-bucket totals, largest first.
+            let mut legend = vec![Span::raw("")];
+            for (bucket, total) in &data.buckets {
+                legend.push(Span::styled(
+                    "■ ",
+                    Style::default().fg(bucket_color(bucket, p)),
+                ));
+                legend.push(Span::styled(
+                    format!("{bucket} {total:.1}   "),
+                    Style::default().fg(p.text),
+                ));
+            }
+            legend.push(Span::styled(
+                format!("Σ {:.1} DBU", data.total),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(legend));
+            lines.push(Line::default());
+
+            let max_day = data
+                .days
+                .iter()
+                .map(|d| d.total)
+                .fold(0.0_f64, f64::max)
+                .max(f64::EPSILON);
+            let inner_w = area.width.saturating_sub(4) as usize;
+            let bar_w = inner_w.saturating_sub(22).max(10);
+
+            for day in &data.days {
+                let mut spans = vec![Span::styled(
+                    // "2026-07-01" -> "07-01"
+                    format!("{:<6}", day.date.chars().skip(5).collect::<String>()),
+                    Style::default().fg(p.dim),
+                )];
+                for (bucket, value) in &day.by_bucket {
+                    let chars = ((value / max_day) * bar_w as f64)
+                        .round()
+                        .max(if *value > 0.0 { 1.0 } else { 0.0 })
+                        as usize;
+                    spans.push(Span::styled(
+                        "█".repeat(chars),
+                        Style::default().fg(bucket_color(bucket, p)),
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!("  {:.1}", day.total),
+                    Style::default().fg(p.text),
+                ));
+                lines.push(Line::from(spans));
+            }
+
+            let par = Paragraph::new(lines).block(block);
+            f.render_widget(par, area);
+        }
+    }
+}
+
 fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let pv = app.preview.as_ref().unwrap();
     let acc = p.catalog;
@@ -632,7 +750,15 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let spans = if app.wh_picker.is_some() {
+    let spans = if app.cost.is_some() {
+        vec![
+            dim(" "),
+            key("esc"),
+            dim(" back   "),
+            key("q"),
+            dim(" quit"),
+        ]
+    } else if app.wh_picker.is_some() {
         vec![
             dim(" "),
             key("j"),
@@ -725,6 +851,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         spans.extend([
             key("g"),
             dim(" access   "),
+            key("$"),
+            dim(" cost   "),
             key("o"),
             dim(" open   "),
             key("z"),

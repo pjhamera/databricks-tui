@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod clusters;
+pub mod cost;
 pub mod current_user;
 pub mod dashboards;
 pub mod detail;

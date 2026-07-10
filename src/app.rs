@@ -101,10 +101,22 @@ pub struct Preview {
     pub scroll: usize,
 }
 
-/// Overlay for choosing which SQL warehouse runs a preview.
+/// What a confirmed warehouse choice should run.
+enum PickTarget {
+    Preview(String),
+    Cost,
+}
+
+/// Overlay for choosing which SQL warehouse runs a query.
 pub struct WhPicker {
     pub index: usize,
-    table: String,
+    target: PickTarget,
+}
+
+/// Full-screen DBU usage view backed by system.billing.usage.
+pub struct CostView {
+    pub warehouse: String,
+    pub data: Option<Result<fetchers::cost::CostData, String>>,
 }
 
 /// A pending destructive/mutating action awaiting a y/n keystroke.
@@ -148,6 +160,8 @@ pub struct App {
     pub wh_picker: Option<WhPicker>,
     /// Session-remembered (id, name) of the warehouse used for previews.
     pub preview_warehouse: Option<(String, String)>,
+    pub cost: Option<CostView>,
+    cost_rx: Option<oneshot::Receiver<Result<fetchers::cost::CostData, String>>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
     detail_rx: Option<oneshot::Receiver<DetailData>>,
     action_rx: Option<oneshot::Receiver<Result<String, String>>>,
@@ -188,6 +202,8 @@ impl App {
             preview_rx: None,
             wh_picker: None,
             preview_warehouse: None,
+            cost: None,
+            cost_rx: None,
             pending: None,
             detail_rx: None,
             action_rx: None,
@@ -266,6 +282,8 @@ impl App {
         self.preview_rx = None;
         self.wh_picker = None;
         self.preview_warehouse = None;
+        self.cost = None;
+        self.cost_rx = None;
         self.pending = None;
         self.in_flight = 0;
         self.loading = false;
@@ -485,8 +503,79 @@ impl App {
             .unwrap_or(0);
         self.wh_picker = Some(WhPicker {
             index,
-            table: full_name,
+            target: PickTarget::Preview(full_name),
         });
+    }
+
+    /// Opens the DBU usage view, resolving a warehouse like previews do.
+    pub fn open_cost(&mut self, cli: &Arc<DatabricksCli>) {
+        let warehouses = self.warehouses();
+        if warehouses.is_empty() {
+            self.flash = Some((
+                "✗ no SQL warehouse available to query system tables".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if let Some((id, name)) = self.preview_warehouse.clone() {
+            self.start_cost_query(cli, id, name);
+            return;
+        }
+        if let [(name, id, _)] = warehouses.as_slice() {
+            self.preview_warehouse = Some((id.clone(), name.clone()));
+            self.start_cost_query(cli, id.clone(), name.clone());
+            return;
+        }
+        let index = warehouses
+            .iter()
+            .position(|(_, _, running)| *running)
+            .unwrap_or(0);
+        self.wh_picker = Some(WhPicker {
+            index,
+            target: PickTarget::Cost,
+        });
+    }
+
+    fn start_cost_query(&mut self, cli: &Arc<DatabricksCli>, id: String, name: String) {
+        self.cost = Some(CostView {
+            warehouse: name,
+            data: None,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.cost_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let result = fetchers::cost::fetch(&cli, &id).await;
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn close_cost(&mut self) {
+        self.cost = None;
+        self.cost_rx = None;
+    }
+
+    pub fn poll_cost(&mut self) -> bool {
+        let Some(rx) = &mut self.cost_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                if result.is_err() {
+                    self.preview_warehouse = None;
+                }
+                if let Some(cv) = &mut self.cost {
+                    cv.data = Some(result);
+                }
+                self.cost_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.cost_rx = None;
+                true
+            }
+        }
     }
 
     pub fn wh_picker_next(&mut self) {
@@ -516,7 +605,12 @@ impl App {
             return;
         };
         self.preview_warehouse = Some((id.clone(), name.clone()));
-        self.start_preview_query(cli, picker.table, id.clone(), name.clone());
+        match picker.target {
+            PickTarget::Preview(table) => {
+                self.start_preview_query(cli, table, id.clone(), name.clone())
+            }
+            PickTarget::Cost => self.start_cost_query(cli, id.clone(), name.clone()),
+        }
     }
 
     fn start_preview_query(
@@ -854,6 +948,7 @@ impl App {
             || self.detail_rx.is_some()
             || self.action_rx.is_some()
             || self.preview_rx.is_some()
+            || self.cost_rx.is_some()
     }
 
     pub fn tick_spinner(&mut self) {
