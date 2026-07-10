@@ -358,6 +358,10 @@ async fn run(
                             app.open_preview(&cli, false);
                             needs_redraw = true;
                         }
+                        (KeyCode::Char('g'), _) => {
+                            app.open_grants(&cli);
+                            needs_redraw = true;
+                        }
                         (KeyCode::Char('P'), _) => {
                             app.open_preview(&cli, true);
                             needs_redraw = true;

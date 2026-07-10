@@ -3,6 +3,7 @@ pub mod clusters;
 pub mod current_user;
 pub mod dashboards;
 pub mod detail;
+pub mod grants;
 pub mod jobs;
 pub mod pipelines;
 pub mod preview;

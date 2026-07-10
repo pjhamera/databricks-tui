@@ -12,6 +12,7 @@ pub async fn fetch(cli: &DatabricksCli, group: &str, id: &str) -> DetailData {
     let (main, mut activity) = match group {
         "clusters" => tokio::join!(get, cluster_events(cli, id)),
         "jobs" => tokio::join!(get, job_runs(cli, id)),
+        "warehouses" => tokio::join!(get, warehouse_queries(cli, id)),
         _ => (get.await, Vec::new()),
     };
     let json = match main {
@@ -334,6 +335,52 @@ fn volume_summary(j: &Value) -> Vec<(String, String)> {
         j["updated_at"].as_u64().map(relative_time),
     );
     s
+}
+
+/// Recent queries on a warehouse, via the query history REST API —
+/// no warehouse wake-up needed.
+async fn warehouse_queries(cli: &DatabricksCli, id: &str) -> Vec<(Status, String)> {
+    let path = format!("/api/2.0/sql/history/queries?filter_by.warehouse_ids={id}&max_results=12");
+    let Ok(json) = cli.run(&["api", "get", &path]).await else {
+        return Vec::new();
+    };
+    json["res"]
+        .as_array()
+        .map(|queries| {
+            queries
+                .iter()
+                .map(|q| {
+                    let status: Status = q["status"].as_str().unwrap_or("").parse().unwrap();
+                    let user = q["user_display_name"]
+                        .as_str()
+                        .or_else(|| q["user_name"].as_str())
+                        .unwrap_or("?");
+                    let when = q["query_start_time_ms"]
+                        .as_u64()
+                        .map(relative_time)
+                        .unwrap_or_default();
+                    let dur = q["duration"]
+                        .as_u64()
+                        .map(fmt_duration_ms)
+                        .unwrap_or_default();
+                    let text: String = q["query_text"]
+                        .as_str()
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(60)
+                        .collect();
+                    let parts: Vec<String> = [user.to_string(), dur, when, text]
+                        .into_iter()
+                        .filter(|p| !p.is_empty())
+                        .collect();
+                    (status, parts.join(" · "))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn warehouse_summary(j: &Value) -> Vec<(String, String)> {

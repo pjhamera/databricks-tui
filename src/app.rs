@@ -81,6 +81,8 @@ pub struct Detail {
     pub id: String,
     /// Item kind for Unity Catalog leaves (TABLE / VIEW / VOLUME).
     pub kind: Option<String>,
+    /// Heading of the activity section ("Recent activity", "Access", ...).
+    pub section: &'static str,
     /// None while the fetch is in flight.
     pub data: Option<DetailData>,
     /// Toggles between the formatted summary and the raw JSON.
@@ -356,11 +358,18 @@ impl App {
             Status::Unknown(k) if !k.is_empty() => Some(k.clone()),
             _ => None,
         };
+        let section = match self.focus {
+            Panel::Dashboards => "Contents",
+            Panel::Catalog => "Columns",
+            Panel::Warehouses => "Recent queries",
+            _ => "Recent activity",
+        };
         self.detail = Some(Detail {
             panel: self.focus,
             name: item.name.clone(),
             id: id.clone(),
             kind,
+            section,
             data: None,
             show_raw: false,
             scroll: 0,
@@ -596,6 +605,48 @@ impl App {
                 true
             }
         }
+    }
+
+    /// Opens the access view for the selected item: effective UC grants
+    /// or the workspace object ACL.
+    pub fn open_grants(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let Some(id) = item.id.clone() else {
+            return;
+        };
+        let (uc, object_type): (bool, &'static str) = match self.focus {
+            Panel::Catalog => match &item.status {
+                Status::Unknown(k) if k == "CATALOG" => (true, "catalog"),
+                Status::Unknown(k) if k == "SCHEMA" => (true, "schema"),
+                Status::Unknown(k) if k == "TABLE" || k == "VIEW" => (true, "table"),
+                Status::Unknown(k) if k == "VOLUME" => (true, "volume"),
+                _ => return,
+            },
+            Panel::Clusters => (false, "clusters"),
+            Panel::Jobs => (false, "jobs"),
+            Panel::Pipelines => (false, "pipelines"),
+            Panel::Warehouses => (false, "warehouses"),
+            Panel::Dashboards => (false, "dashboards"),
+        };
+        self.detail = Some(Detail {
+            panel: self.focus,
+            name: item.name.clone(),
+            id: id.clone(),
+            kind: None,
+            section: "Access",
+            data: None,
+            show_raw: false,
+            scroll: 0,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.detail_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let data = fetchers::grants::fetch(&cli, uc, object_type, &id).await;
+            let _ = tx.send(data);
+        });
     }
 
     pub fn close_detail(&mut self) {

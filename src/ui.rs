@@ -505,14 +505,9 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         })
         .collect();
     if !data.activity.is_empty() {
-        let section = match d.panel {
-            Panel::Dashboards => "Contents",
-            Panel::Catalog => "Columns",
-            _ => "Recent activity",
-        };
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            section,
+            d.section,
             Style::default().fg(acc).add_modifier(Modifier::BOLD),
         )));
         for (status, text) in &data.activity {
@@ -728,6 +723,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             }
         }
         spans.extend([
+            key("g"),
+            dim(" access   "),
             key("o"),
             dim(" open   "),
             key("z"),

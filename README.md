@@ -10,6 +10,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Health summary in the header: running / pending / failed / idle counts at a glance
 - Drill into any item: formatted key facts and recent activity, raw JSON one key away
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
+- Inspect access: effective Unity Catalog grants (with inheritance) and
+  workspace object ACLs for any selected item
+- Warehouse details include recent query history: who ran what, how long
 - Jump to any resource in the workspace web UI with one key
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
@@ -83,6 +86,7 @@ them can be slow on busy workspaces.
 | `p` | Preview sample data for the selected table/view (may start a warehouse) |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
+| `g` | Show access: effective grants / permissions for the selected item |
 | `o` | Open selected item in the workspace web UI |
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |

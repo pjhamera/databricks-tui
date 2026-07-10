@@ -18,7 +18,7 @@ impl FromStr for Status {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_uppercase().as_str() {
             "RUNNING" => Status::Running,
-            "SUCCESS" | "COMPLETED" => Status::Success,
+            "SUCCESS" | "COMPLETED" | "FINISHED" => Status::Success,
             "IDLE" | "STOPPED" | "TERMINATED" | "DELETED" | "SKIPPED" | "CANCELED" => {
                 Status::Stopped
             }
