@@ -3,6 +3,26 @@ use crate::shape::TableData;
 use serde_json::Value;
 use std::time::Duration;
 
+/// Enriches a statement failure with what the workspace itself says
+/// about the warehouse, separating permission problems from stale ids.
+async fn diagnose(cli: &DatabricksCli, warehouse_id: &str, base_err: String) -> String {
+    match cli.run(&["warehouses", "get", warehouse_id]).await {
+        Ok(j) => {
+            let state = j["state"].as_str().unwrap_or("unknown");
+            format!(
+                "{base_err}\n\ndiagnostic: warehouse {warehouse_id} DOES exist in this \
+                 workspace (state: {state}), yet the SQL Statements API rejected it — \
+                 this is usually a missing CAN USE permission on the warehouse for your user"
+            )
+        }
+        Err(e) => format!(
+            "{base_err}\n\ndiagnostic: `warehouses get {warehouse_id}` also fails \
+             ({e:#}) — the warehouse does not exist in the workspace this query went to \
+             (stale list entry, or the query was routed to a different workspace)"
+        ),
+    }
+}
+
 fn quoted(full_name: &str) -> String {
     full_name
         .split('.')
@@ -38,10 +58,13 @@ pub async fn fetch(
     })
     .to_string();
 
-    let mut resp = cli
+    let mut resp = match cli
         .run(&["api", "post", "/api/2.0/sql/statements", "--json", &payload])
         .await
-        .map_err(|e| format!("{e:#}"))?;
+    {
+        Ok(r) => r,
+        Err(e) => return Err(diagnose(cli, warehouse_id, format!("{e:#}")).await),
+    };
 
     // The warehouse may need minutes to cold-start; keep polling the statement.
     let id = resp["statement_id"]
@@ -59,7 +82,7 @@ pub async fn fetch(
                     .await
                     .map_err(|e| format!("{e:#}"))?;
             }
-            _ => return Err(error_of(&resp)),
+            _ => return Err(diagnose(cli, warehouse_id, error_of(&resp)).await),
         }
     }
     if state_of(&resp) != "SUCCEEDED" {

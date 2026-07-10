@@ -409,8 +409,11 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         }
         Some(Err(e)) => {
             let text = format!(
-                "✗ {e}\n\nwarehouse: {} ({})\npress esc, then P to pick a different warehouse",
-                pv.warehouse, pv.warehouse_id
+                "✗ {e}\n\nwarehouse: {} ({})\nprofile: {} · host: {}\npress esc, then P to pick a different warehouse",
+                pv.warehouse,
+                pv.warehouse_id,
+                app.profile.as_deref().unwrap_or("default"),
+                app.host.as_deref().unwrap_or("unknown"),
             );
             let par = Paragraph::new(text)
                 .style(Style::default().fg(p.err))
