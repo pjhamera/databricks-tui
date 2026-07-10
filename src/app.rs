@@ -91,8 +91,9 @@ pub struct Detail {
 /// Full-screen sample-data view for a Unity Catalog table or view.
 pub struct Preview {
     pub name: String,
-    /// Display name of the warehouse running the query.
+    /// Display name and id of the warehouse running the query.
     pub warehouse: String,
+    pub warehouse_id: String,
     /// None while the query runs; then rows or an error.
     pub data: Option<Result<crate::shape::TableData, String>>,
     pub scroll: usize,
@@ -519,6 +520,7 @@ impl App {
         self.preview = Some(Preview {
             name: full_name.clone(),
             warehouse: warehouse_name,
+            warehouse_id: warehouse_id.clone(),
             data: None,
             scroll: 0,
         });
@@ -542,6 +544,10 @@ impl App {
         };
         match rx.try_recv() {
             Ok(result) => {
+                // A warehouse that errors shouldn't stay the session default.
+                if result.is_err() {
+                    self.preview_warehouse = None;
+                }
                 if let Some(pv) = &mut self.preview {
                     pv.data = Some(result);
                 }

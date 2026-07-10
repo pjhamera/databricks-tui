@@ -189,15 +189,15 @@ fn draw_wh_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     };
     let warehouses = app.warehouses();
-    let width = (warehouses
+    let name_w = warehouses
         .iter()
-        .map(|(n, _, _)| n.len())
+        .map(|(n, _, _)| n.chars().count())
         .max()
-        .unwrap_or(10)
-        .max(24) as u16
-        + 8)
-    .min(area.width);
-    let height = (warehouses.len() as u16 + 2).min(area.height);
+        .unwrap_or(12)
+        .max(12);
+    // marker(2) + dot(2) + name + gap(2) + state(7) + gap(2) + id(16) + padding/borders(6)
+    let width = ((name_w + 37) as u16).min(area.width.saturating_sub(4));
+    let height = (warehouses.len() as u16 + 4).min(area.height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -206,16 +206,21 @@ fn draw_wh_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     };
     f.render_widget(Clear, popup);
     let block = Block::default()
-        .title(Line::from(Span::styled(
-            " ▣ Preview warehouse ",
+        .title(Line::from(vec![
+            Span::styled(" ▣ ", Style::default().fg(p.warehouses)),
+            Span::styled(
+                "Run preview on ",
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(
             Style::default()
                 .fg(p.warehouses)
                 .add_modifier(Modifier::BOLD),
-        )))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(p.warehouses))
-        .padding(Padding::horizontal(1));
+        )
+        .padding(Padding::new(1, 1, 1, 1));
     let current_id = app.preview_warehouse.as_ref().map(|(id, _)| id.as_str());
     let items: Vec<ListItem> = warehouses
         .iter()
@@ -226,14 +231,16 @@ fn draw_wh_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             } else {
                 "  "
             };
+            let state = if *running { "running" } else { "idle   " };
             ListItem::new(Line::from(vec![
                 Span::styled(marker, Style::default().fg(p.key)),
                 Span::styled("● ", Style::default().fg(dot)),
-                Span::styled(name.as_str(), Style::default().fg(p.text)),
+                Span::styled(format!("{name:<name_w$}"), Style::default().fg(p.text)),
                 Span::styled(
-                    if *running { "  running" } else { "  idle" },
-                    Style::default().fg(p.dim),
+                    format!("  {state}"),
+                    Style::default().fg(if *running { p.ok } else { p.dim }),
                 ),
+                Span::styled(format!("  {id}"), Style::default().fg(p.dim)),
             ]))
         })
         .collect();
@@ -401,7 +408,11 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             f.render_widget(par, area);
         }
         Some(Err(e)) => {
-            let par = Paragraph::new(format!("✗ {e}"))
+            let text = format!(
+                "✗ {e}\n\nwarehouse: {} ({})\npress esc, then P to pick a different warehouse",
+                pv.warehouse, pv.warehouse_id
+            );
+            let par = Paragraph::new(text)
                 .style(Style::default().fg(p.err))
                 .wrap(Wrap { trim: false })
                 .block(block);
