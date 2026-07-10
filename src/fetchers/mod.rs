@@ -5,4 +5,5 @@ pub mod dashboards;
 pub mod detail;
 pub mod jobs;
 pub mod pipelines;
+pub mod preview;
 pub mod warehouses;

@@ -88,6 +88,14 @@ pub struct Detail {
     pub scroll: u16,
 }
 
+/// Full-screen sample-data view for a Unity Catalog table or view.
+pub struct Preview {
+    pub name: String,
+    /// None while the query runs; then rows or an error.
+    pub data: Option<Result<crate::shape::TableData, String>>,
+    pub scroll: usize,
+}
+
 /// A pending destructive/mutating action awaiting a y/n keystroke.
 pub struct Confirm {
     pub message: String,
@@ -124,6 +132,8 @@ pub struct App {
     /// Current position in the Unity Catalog tree: [], [catalog] or [catalog, schema].
     pub uc_path: Vec<String>,
     uc_rx: Option<oneshot::Receiver<Result<Shape, String>>>,
+    pub preview: Option<Preview>,
+    preview_rx: Option<oneshot::Receiver<Result<crate::shape::TableData, String>>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
     detail_rx: Option<oneshot::Receiver<DetailData>>,
     action_rx: Option<oneshot::Receiver<Result<String, String>>>,
@@ -160,6 +170,8 @@ impl App {
             picker: None,
             uc_path: Vec::new(),
             uc_rx: None,
+            preview: None,
+            preview_rx: None,
             pending: None,
             detail_rx: None,
             action_rx: None,
@@ -234,6 +246,8 @@ impl App {
         self.confirm = None;
         self.uc_path.clear();
         self.uc_rx = None;
+        self.preview = None;
+        self.preview_rx = None;
         self.pending = None;
         self.in_flight = 0;
         self.loading = false;
@@ -386,6 +400,92 @@ impl App {
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
         });
+    }
+
+    /// The warehouse used for previews: a running one if any, else the first.
+    fn pick_warehouse(&self) -> Option<String> {
+        let Some(Shape::List(items)) = &self.shapes[3] else {
+            return None;
+        };
+        items
+            .iter()
+            .find(|i| matches!(i.status, Status::Running))
+            .or_else(|| items.first())
+            .and_then(|i| i.id.clone())
+    }
+
+    /// Runs a sample-data query for the selected table or view.
+    pub fn open_preview(&mut self, cli: &Arc<DatabricksCli>) {
+        if self.focus != Panel::Catalog {
+            return;
+        }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        if !matches!(&item.status, Status::Unknown(k) if k == "TABLE" || k == "VIEW") {
+            return;
+        }
+        let Some(full_name) = item.id.clone() else {
+            return;
+        };
+        let Some(warehouse) = self.pick_warehouse() else {
+            self.flash = Some((
+                "✗ no SQL warehouse available for previews".to_string(),
+                Instant::now(),
+            ));
+            return;
+        };
+        self.preview = Some(Preview {
+            name: full_name.clone(),
+            data: None,
+            scroll: 0,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.preview_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let result = fetchers::preview::fetch(&cli, &full_name, &warehouse).await;
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn close_preview(&mut self) {
+        self.preview = None;
+        self.preview_rx = None;
+    }
+
+    pub fn poll_preview(&mut self) -> bool {
+        let Some(rx) = &mut self.preview_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                if let Some(pv) = &mut self.preview {
+                    pv.data = Some(result);
+                }
+                self.preview_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.preview_rx = None;
+                true
+            }
+        }
+    }
+
+    pub fn preview_scroll(&mut self, delta: i32) {
+        if let Some(pv) = &mut self.preview {
+            let max = match &pv.data {
+                Some(Ok(t)) => t.rows.len().saturating_sub(1),
+                _ => 0,
+            };
+            pv.scroll = if delta < 0 {
+                pv.scroll.saturating_sub(delta.unsigned_abs() as usize)
+            } else {
+                (pv.scroll + delta as usize).min(max)
+            };
+        }
     }
 
     pub fn poll_uc(&mut self) -> bool {
@@ -611,7 +711,10 @@ impl App {
     /// True whenever any background work is in flight — the loop uses this
     /// to keep spinners ticking, not just during panel refreshes.
     pub fn busy(&self) -> bool {
-        self.loading || self.detail_rx.is_some() || self.action_rx.is_some()
+        self.loading
+            || self.detail_rx.is_some()
+            || self.action_rx.is_some()
+            || self.preview_rx.is_some()
     }
 
     pub fn tick_spinner(&mut self) {

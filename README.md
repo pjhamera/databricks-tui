@@ -13,7 +13,8 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Jump to any resource in the workspace web UI with one key
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
-  volumes; table details include the full column schema
+  volumes; table details include the full column schema, and `p` previews
+  sample rows in a terminal table (runs SELECT … LIMIT 50 on a SQL warehouse)
 - Switch between workspaces (CLI profiles) without restarting
 - Zoom into any pane, light/dark theme, non-blocking refresh — the UI never freezes
 - Built-in self-upgrade from GitHub releases
@@ -79,6 +80,7 @@ them can be slow on busy workspaces.
 | `↓` / `j`, `↑` / `k` | Select item in focused panel |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog) |
 | `Backspace` | Go up one level in the Unity Catalog tree |
+| `p` | Preview sample data for the selected table/view (may start a warehouse) |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
 | `o` | Open selected item in the workspace web UI |
 | `z` | Zoom focused panel to full screen |

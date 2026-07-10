@@ -96,6 +96,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_header(f, root[0], app, &p);
     draw_footer(f, root[2], app, &p);
 
+    if app.preview.is_some() {
+        draw_preview(f, root[1], app, &p);
+        return;
+    }
+
     if app.detail.is_some() {
         draw_detail(f, root[1], app, &p);
         return;
@@ -293,6 +298,81 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     f.render_stateful_widget(list, popup, &mut state);
 }
 
+fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let pv = app.preview.as_ref().unwrap();
+    let acc = p.catalog;
+    let row_info = match &pv.data {
+        Some(Ok(t)) => format!(" · {} rows", t.rows.len()),
+        _ => String::new(),
+    };
+    let title = Line::from(vec![
+        Span::styled(" ◫ ", Style::default().fg(acc)),
+        Span::styled(
+            format!("{}{} · preview ", pv.name, row_info),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
+        .padding(Padding::horizontal(1));
+
+    match &pv.data {
+        None => {
+            let par = Paragraph::new(format!(
+                "{} running SELECT * LIMIT 50 — the warehouse may need a moment to start…",
+                app.spinner()
+            ))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!("✗ {e}"))
+                .style(Style::default().fg(p.err))
+                .wrap(Wrap { trim: false })
+                .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(data)) => {
+            let header_cells: Vec<Cell> = data
+                .headers
+                .iter()
+                .map(|h| {
+                    Cell::from(h.as_str())
+                        .style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
+                })
+                .collect();
+            let header = Row::new(header_cells);
+            let rows: Vec<Row> = data
+                .rows
+                .iter()
+                .skip(pv.scroll)
+                .map(|r| {
+                    Row::new(
+                        r.iter()
+                            .map(|c| Cell::from(c.as_str()).style(Style::default().fg(p.text)))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let n = data.headers.len().max(1) as u16;
+            let widths: Vec<Constraint> = data
+                .headers
+                .iter()
+                .map(|_| Constraint::Ratio(1, n as u32))
+                .collect();
+            let table = Table::new(rows, widths)
+                .header(header)
+                .column_spacing(1)
+                .block(block);
+            f.render_widget(table, area);
+        }
+    }
+}
+
 fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let d = app.detail.as_ref().unwrap();
     let acc = accent(d.panel, p);
@@ -472,7 +552,19 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let spans = if app.picker.is_some() {
+    let spans = if app.preview.is_some() {
+        vec![
+            dim(" "),
+            key("esc"),
+            dim(" back   "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" scroll rows   "),
+            key("q"),
+            dim(" quit"),
+        ]
+    } else if app.picker.is_some() {
         vec![
             dim(" "),
             key("j"),
@@ -523,6 +615,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" action   "),
             key("⌫"),
             dim(" up   "),
+            key("p"),
+            dim(" preview   "),
             key("o"),
             dim(" open   "),
             key("z"),
