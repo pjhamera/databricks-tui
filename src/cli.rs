@@ -34,6 +34,11 @@ impl DatabricksCli {
 
     pub async fn run(&self, args: &[&str]) -> Result<Value> {
         let mut cmd = Command::new("databricks");
+        // Run from a neutral directory: inside a bundle folder the CLI
+        // resolves typed commands against the bundle's workspace but raw
+        // `api` calls against the default profile, splitting the app
+        // across two workspaces. Neutral cwd keeps auth consistent.
+        cmd.current_dir("/");
         cmd.arg("--output").arg("json");
         if let Some(p) = &self.profile {
             cmd.arg("--profile").arg(p);
@@ -58,6 +63,7 @@ impl DatabricksCli {
     /// start/stop/run-now often print nothing or non-JSON on success.
     pub async fn run_action(&self, args: &[&str]) -> Result<()> {
         let mut cmd = Command::new("databricks");
+        cmd.current_dir("/");
         if let Some(p) = &self.profile {
             cmd.arg("--profile").arg(p);
         }
