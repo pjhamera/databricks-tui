@@ -47,6 +47,24 @@ impl ThemeMode {
             ThemeMode::TokyoNight => "Tokyo Night",
         }
     }
+
+    /// Stable id, same kebab-case form the --theme flag accepts.
+    pub fn id(&self) -> &'static str {
+        match self {
+            ThemeMode::Dark => "dark",
+            ThemeMode::Light => "light",
+            ThemeMode::CatppuccinMocha => "catppuccin-mocha",
+            ThemeMode::CatppuccinLatte => "catppuccin-latte",
+            ThemeMode::GruvboxDark => "gruvbox",
+            ThemeMode::Dracula => "dracula",
+            ThemeMode::Nord => "nord",
+            ThemeMode::TokyoNight => "tokyo-night",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|t| t.id() == id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -313,6 +331,8 @@ pub struct App {
     hist_idx: Option<usize>,
     /// The unfinished statement stashed when history browsing starts.
     hist_draft: String,
+    /// Ctrl+R incremental search: (query, nth-newest match shown).
+    pub hist_search: Option<(String, usize)>,
     pub run_view: Option<RunView>,
     run_rx: Option<oneshot::Receiver<RunUpdate>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
@@ -329,6 +349,8 @@ pub struct App {
     pub filters: [String; 6],
     /// True while the user is typing a filter for the focused pane.
     pub filter_entry: bool,
+    /// Persisted preferences (theme, warehouse per profile).
+    pub config: crate::config::Config,
 }
 
 impl App {
@@ -368,6 +390,7 @@ impl App {
             sql_history: load_history(),
             hist_idx: None,
             hist_draft: String::new(),
+            hist_search: None,
             run_view: None,
             run_rx: None,
             pending: None,
@@ -380,7 +403,20 @@ impl App {
             updated_at: [None; 6],
             filters: Default::default(),
             filter_entry: false,
+            config: crate::config::Config::load(),
         }
+    }
+
+    /// Remembers the current theme across sessions.
+    pub fn persist_theme(&mut self) {
+        self.config.theme = Some(self.theme.id().to_string());
+        self.config.save();
+    }
+
+    /// Restores the remembered warehouse for the active profile.
+    pub fn restore_warehouse_pref(&mut self) {
+        let profile = self.profile.as_deref().unwrap_or("DEFAULT");
+        self.preview_warehouse = self.config.warehouses.get(profile).cloned();
     }
 
     pub fn splash_active(&self) -> bool {
@@ -464,6 +500,7 @@ impl App {
         self.zoomed = false;
         self.filters = Default::default();
         self.filter_entry = false;
+        self.restore_warehouse_pref();
 
         Some(Arc::new(DatabricksCli::new(profile_arg)))
     }
@@ -691,12 +728,21 @@ impl App {
     /// Descends one level in the Unity Catalog tree. Returns false when the
     /// selection is a leaf (caller should open the detail view instead).
     pub fn uc_drill(&mut self, cli: &Arc<DatabricksCli>) -> bool {
-        if self.focus != Panel::Catalog || self.uc_path.len() >= 2 {
+        if self.focus != Panel::Catalog {
             return false;
         }
         let Some(item) = self.selected_item() else {
-            return true; // empty pane: swallow the key
+            return self.uc_path.is_empty(); // empty root pane: swallow the key
         };
+        // Below the schema level only volumes and their directories are
+        // containers; tables/views fall through to the detail view.
+        if self.uc_path.len() >= 2 {
+            let drillable =
+                matches!(&item.status, Status::Unknown(k) if k == "VOLUME" || k == "DIR");
+            if !drillable {
+                return false;
+            }
+        }
         self.uc_path.push(item.name.clone());
         self.refresh_catalog(cli);
         true
@@ -965,6 +1011,79 @@ impl App {
         self.sql_rx = None;
         self.hist_idx = None;
         self.hist_draft.clear();
+        self.hist_search = None;
+    }
+
+    /// The statement currently in the prompt.
+    pub fn sql_input(&self) -> Option<String> {
+        self.sql.as_ref().map(|c| c.input.clone())
+    }
+
+    /// Replaces the prompt contents (after an $EDITOR round-trip).
+    pub fn sql_set_input(&mut self, s: &str) {
+        if let Some(console) = &mut self.sql {
+            console.input = s.to_string();
+            console.cursor = console.input.chars().count();
+        }
+    }
+
+    /// The history entry the active Ctrl+R search currently matches.
+    pub fn hist_search_current(&self) -> Option<&String> {
+        let (query, nth) = self.hist_search.as_ref()?;
+        self.sql_history
+            .iter()
+            .rev()
+            .filter(|h| h.to_lowercase().contains(&query.to_lowercase()))
+            .nth(*nth)
+    }
+
+    pub fn hist_search_start(&mut self) {
+        if self.sql.is_some() {
+            self.hist_search = Some((String::new(), 0));
+        }
+    }
+
+    pub fn hist_search_push(&mut self, c: char) {
+        if let Some((query, nth)) = &mut self.hist_search {
+            query.push(c);
+            *nth = 0;
+        }
+    }
+
+    pub fn hist_search_pop(&mut self) {
+        if let Some((query, nth)) = &mut self.hist_search {
+            query.pop();
+            *nth = 0;
+        }
+    }
+
+    /// Ctrl+R again: step to the next older match.
+    pub fn hist_search_older(&mut self) {
+        let Some((query, nth)) = &self.hist_search else {
+            return;
+        };
+        let q = query.to_lowercase();
+        let matches = self
+            .sql_history
+            .iter()
+            .filter(|h| h.to_lowercase().contains(&q))
+            .count();
+        if nth + 1 < matches {
+            if let Some((_, n)) = &mut self.hist_search {
+                *n += 1;
+            }
+        }
+    }
+
+    pub fn hist_search_accept(&mut self) {
+        if let Some(stmt) = self.hist_search_current().cloned() {
+            self.sql_set_input(&stmt);
+        }
+        self.hist_search = None;
+    }
+
+    pub fn hist_search_cancel(&mut self) {
+        self.hist_search = None;
     }
 
     pub fn sql_push(&mut self, c: char) {
@@ -1273,6 +1392,12 @@ impl App {
             return;
         };
         self.preview_warehouse = Some((id.clone(), name.clone()));
+        // An explicit choice is worth remembering across sessions.
+        let profile = self.profile.clone().unwrap_or_else(|| "DEFAULT".into());
+        self.config
+            .warehouses
+            .insert(profile, (id.clone(), name.clone()));
+        self.config.save();
         match picker.target {
             PickTarget::Preview(table) => {
                 self.start_preview_query(cli, table, id.clone(), name.clone())

@@ -827,26 +827,46 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .add_modifier(Modifier::BOLD),
         )
         .padding(Padding::horizontal(1));
-    // Caret sits at the cursor, not the end; long inputs scroll so the
-    // caret stays visible.
-    let caret_byte = console
-        .input
-        .char_indices()
-        .nth(console.cursor)
-        .map(|(i, _)| i)
-        .unwrap_or(console.input.len());
-    let (before, after) = console.input.split_at(caret_byte);
-    let inner_w = parts[0].width.saturating_sub(4) as usize; // borders + padding
-    let hscroll = (console.cursor + 3).saturating_sub(inner_w) as u16;
-    let prompt = Paragraph::new(Line::from(vec![
-        Span::styled("❯ ", Style::default().fg(p.key)),
-        Span::styled(before, Style::default().fg(p.text)),
-        Span::styled("▏", Style::default().fg(p.warn)),
-        Span::styled(after, Style::default().fg(p.text)),
-    ]))
-    .scroll((0, hscroll))
-    .block(prompt_block);
-    f.render_widget(prompt, parts[0]);
+    if let Some((query, _)) = &app.hist_search {
+        // Readline-style incremental search over history.
+        let matched = app
+            .hist_search_current()
+            .map(|s| s.replace('\n', " "))
+            .unwrap_or_default();
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled("(reverse-i-search)`", Style::default().fg(p.dim)),
+            Span::styled(
+                query.as_str(),
+                Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("`: ", Style::default().fg(p.dim)),
+            Span::styled(matched, Style::default().fg(p.text)),
+        ]))
+        .block(prompt_block);
+        f.render_widget(prompt, parts[0]);
+    } else {
+        // Caret sits at the cursor, not the end; long inputs scroll so
+        // the caret stays visible. Newlines from $EDITOR render as
+        // spaces (byte-for-byte, so the caret math holds).
+        let caret_byte = console
+            .input
+            .char_indices()
+            .nth(console.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(console.input.len());
+        let (before, after) = console.input.split_at(caret_byte);
+        let inner_w = parts[0].width.saturating_sub(4) as usize; // borders + padding
+        let hscroll = (console.cursor + 3).saturating_sub(inner_w) as u16;
+        let prompt = Paragraph::new(Line::from(vec![
+            Span::styled("❯ ", Style::default().fg(p.key)),
+            Span::styled(before.replace('\n', " "), Style::default().fg(p.text)),
+            Span::styled("▏", Style::default().fg(p.warn)),
+            Span::styled(after.replace('\n', " "), Style::default().fg(p.text)),
+        ]))
+        .scroll((0, hscroll))
+        .block(prompt_block);
+        f.render_widget(prompt, parts[0]);
+    }
 
     let row_info = match &console.data {
         Some(Ok(t)) => format!("{} rows ", t.rows.len()),
@@ -1353,23 +1373,39 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" cancel"),
         ]
     } else if app.sql.is_some() {
-        vec![
-            dim(" "),
-            key("enter"),
-            dim(" run   "),
-            key("↑"),
-            dim("/"),
-            key("↓"),
-            dim(" history   "),
-            key("pgup"),
-            dim("/"),
-            key("pgdn"),
-            dim(" scroll rows   "),
-            key("^s"),
-            dim(" export csv   "),
-            key("esc"),
-            dim(" close"),
-        ]
+        if app.hist_search.is_some() {
+            vec![
+                dim(" type to search history   "),
+                key("^r"),
+                dim(" older match   "),
+                key("enter"),
+                dim(" accept   "),
+                key("esc"),
+                dim(" cancel"),
+            ]
+        } else {
+            vec![
+                dim(" "),
+                key("enter"),
+                dim(" run   "),
+                key("↑"),
+                dim("/"),
+                key("↓"),
+                dim(" history   "),
+                key("^r"),
+                dim(" search   "),
+                key("^x"),
+                dim(" editor   "),
+                key("pgup"),
+                dim("/"),
+                key("pgdn"),
+                dim(" scroll   "),
+                key("^s"),
+                dim(" export   "),
+                key("esc"),
+                dim(" close"),
+            ]
+        }
     } else if app.preview.is_some() {
         vec![
             dim(" "),

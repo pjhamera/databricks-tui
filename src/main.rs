@@ -28,8 +28,8 @@ struct Cli {
     #[arg(long, default_value = "30", help = "Auto-refresh interval in seconds")]
     refresh: u64,
 
-    #[arg(long, value_enum, default_value_t = ThemeArg::Dark, help = "Color theme")]
-    theme: ThemeArg,
+    #[arg(long, value_enum, help = "Color theme (default: last used, then dark)")]
+    theme: Option<ThemeArg>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -85,9 +85,19 @@ async fn main() -> Result<()> {
     }
 
     let cli = Arc::new(DatabricksCli::new(args.profile.clone()));
-    let mut app = App::new(args.refresh, args.theme.into());
+    let mut app = App::new(args.refresh, ThemeMode::Dark);
+    // Flag beats remembered preference beats default.
+    app.theme = args
+        .theme
+        .map(ThemeMode::from)
+        .or_else(|| app.config.theme.as_deref().and_then(ThemeMode::from_id))
+        .unwrap_or(ThemeMode::Dark);
+    if args.theme.is_some() {
+        app.persist_theme();
+    }
     app.profiles = dbx::list_profiles();
     app.profile = args.profile.or_else(|| Some("DEFAULT".to_string()));
+    app.restore_warehouse_pref();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -149,6 +159,40 @@ fn uninstall(yes: bool) -> Result<()> {
     }
     std::fs::remove_file(&exe).with_context(|| format!("failed to remove {}", exe.display()))?;
     println!("Removed {}", exe.display());
+    Ok(())
+}
+
+/// Suspends the TUI, opens $EDITOR on the current statement, and puts
+/// the edited text back into the prompt.
+fn edit_sql_in_editor(
+    terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    let Some(current) = app.sql_input() else {
+        return Ok(());
+    };
+    let path = std::env::temp_dir().join(format!("databricks-tui-{}.sql", std::process::id()));
+    std::fs::write(&path, &current)?;
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} '{}'", path.display()))
+        .status();
+    enable_raw_mode()?;
+    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    if status.map(|s| s.success()).unwrap_or(false) {
+        if let Ok(edited) = std::fs::read_to_string(&path) {
+            app.sql_set_input(edited.trim());
+        }
+    }
+    let _ = std::fs::remove_file(&path);
     Ok(())
 }
 
@@ -316,6 +360,18 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.sql.is_some() && app.hist_search.is_some() {
+                    // Ctrl+R incremental search over past statements.
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.hist_search_older(),
+                        (KeyCode::Esc, _) => app.hist_search_cancel(),
+                        (KeyCode::Enter, _) => app.hist_search_accept(),
+                        (KeyCode::Backspace, _) => app.hist_search_pop(),
+                        (KeyCode::Char(ch), _) => app.hist_search_push(ch),
+                        _ => app.hist_search_cancel(),
+                    }
+                    needs_redraw = true;
                 } else if app.sql.is_some() {
                     // Printable keys type into the prompt.
                     match (key.code, key.modifiers) {
@@ -323,6 +379,10 @@ async fn run(
                         (KeyCode::Char('a'), KeyModifiers::CONTROL) => app.sql_home(),
                         (KeyCode::Char('e'), KeyModifiers::CONTROL) => app.sql_end(),
                         (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.sql_export(),
+                        (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.hist_search_start(),
+                        (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                            edit_sql_in_editor(terminal, app)?;
+                        }
                         (KeyCode::Esc, _) => app.close_sql(),
                         (KeyCode::Enter, _) => app.sql_run(&cli),
                         (KeyCode::Backspace, _) => app.sql_pop(),
@@ -524,6 +584,7 @@ async fn run(
                         }
                         (KeyCode::Char('t'), _) => {
                             app.theme = app.theme.toggled();
+                            app.persist_theme();
                             app.flash =
                                 Some((format!("✓ theme: {}", app.theme.name()), Instant::now()));
                             needs_redraw = true;

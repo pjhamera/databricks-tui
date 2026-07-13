@@ -22,7 +22,8 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   table/view selected in the catalog pane, the prompt opens pre-filled with
   `SELECT * FROM catalog.schema.table LIMIT 100`, ready to edit; ↑/↓ cycle
   through past statements (persisted in ~/.config/databricks-tui/history),
-  and Ctrl+S exports results to CSV — previews export with `e`
+  Ctrl+R searches them incrementally, Ctrl+X composes multi-line SQL in
+  your $EDITOR, and Ctrl+S exports results to CSV — previews export with `e`
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
@@ -39,12 +40,15 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Jump to any resource in the workspace web UI with one key
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
-  volumes; table details include the full column schema, and `p` previews
-  sample rows in a terminal table (runs SELECT … LIMIT 50 on a SQL warehouse)
+  volumes — and into the volumes themselves, browsing files and directories
+  with sizes and ages; table details include the full column schema, and
+  `p` previews sample rows in a terminal table (SELECT … LIMIT 50)
 - Switch between workspaces (CLI profiles) without restarting
 - Zoom into any pane, non-blocking refresh — the UI never freezes
 - Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
-  Gruvbox, Dracula, Nord and Tokyo Night — `t` cycles, `--theme` picks at launch
+  Gruvbox, Dracula, Nord and Tokyo Night — `t` cycles, `--theme` picks at
+  launch, and the app remembers your theme and warehouse choice per profile
+  across sessions (~/.config/databricks-tui/config.json)
 - Built-in self-upgrade from GitHub releases
 
 ## Install
@@ -83,8 +87,8 @@ databricks-tui uninstall          # asks for confirmation
 databricks-tui uninstall --yes    # no prompt
 ```
 
-Removes the binary from wherever it is installed. The only other file the
-app keeps is the SQL console history at `~/.config/databricks-tui/history`.
+Removes the binary from wherever it is installed. The only other files the
+app keeps are under `~/.config/databricks-tui/` (SQL history, preferences).
 
 ## Usage
 
@@ -110,7 +114,7 @@ them can be slow on busy workspaces.
 | `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
 | `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
-| `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `PgUp`/`PgDn` scroll, `Ctrl+S` export CSV |
+| `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Ctrl+S` export CSV |
 | `!` | Problems: everything failing across panes; `Enter` jumps to the item |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse); `e` exports CSV |

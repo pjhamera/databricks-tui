@@ -32,9 +32,18 @@ fn entry(v: &Value, kind: &str) -> ListItem {
     }
 }
 
+fn fmt_size(bytes: u64) -> String {
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{:.1} KB", bytes as f64 / 1024.0),
+        1_048_576..=1_073_741_823 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.1} GB", bytes as f64 / 1_073_741_824.0),
+    }
+}
+
 /// Lists one level of the Unity Catalog tree:
 /// no path → catalogs, [catalog] → schemas, [catalog, schema] → tables,
-/// views and volumes.
+/// views and volumes, deeper → files inside a volume.
 pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
     let mut items: Vec<ListItem> = match path {
         [] => items_of(&cli.run(&["catalogs", "list"]).await?)
@@ -45,6 +54,41 @@ pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
             .iter()
             .map(|s| entry(s, "SCHEMA"))
             .collect(),
+        [catalog, schema, rest @ ..] if !rest.is_empty() => {
+            let vol_path = format!("dbfs:/Volumes/{catalog}/{schema}/{}", rest.join("/"));
+            let args = ["fs", "ls", &vol_path];
+            items_of(&cli.run(&args).await?)
+                .iter()
+                .map(|f| {
+                    let name = f["path"]
+                        .as_str()
+                        .and_then(|p| p.trim_end_matches('/').rsplit('/').next())
+                        .or_else(|| f["name"].as_str())
+                        .unwrap_or("?")
+                        .trim_end_matches('/')
+                        .to_string();
+                    let is_dir = f["is_dir"].as_bool().unwrap_or(false);
+                    let detail = if is_dir {
+                        None
+                    } else {
+                        let size = f["file_size"].as_u64().map(fmt_size).unwrap_or_default();
+                        let age = f["modification_time"]
+                            .as_u64()
+                            .filter(|t| *t > 0)
+                            .map(crate::shape::relative_time)
+                            .unwrap_or_default();
+                        Some(format!("{size}  {age}").trim().to_string())
+                    };
+                    ListItem {
+                        name,
+                        status: Status::Unknown(if is_dir { "DIR" } else { "FILE" }.to_string()),
+                        detail,
+                        id: None,
+                        history: Vec::new(),
+                    }
+                })
+                .collect()
+        }
         [catalog, schema, ..] => {
             let table_args = ["tables", "list", catalog, schema];
             let volume_args = ["volumes", "list", catalog, schema];
