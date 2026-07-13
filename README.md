@@ -36,7 +36,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   volumes; table details include the full column schema, and `p` previews
   sample rows in a terminal table (runs SELECT … LIMIT 50 on a SQL warehouse)
 - Switch between workspaces (CLI profiles) without restarting
-- Zoom into any pane, light/dark theme, non-blocking refresh — the UI never freezes
+- Zoom into any pane, non-blocking refresh — the UI never freezes
+- Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
+  Gruvbox, Dracula, Nord and Tokyo Night — `t` cycles, `--theme` picks at launch
 - Built-in self-upgrade from GitHub releases
 
 ## Install
@@ -84,7 +86,8 @@ files on your system.
 databricks-tui                      # default profile, 30s refresh
 databricks-tui --profile prod       # named CLI profile
 databricks-tui --refresh 10         # refresh every 10 seconds
-databricks-tui --theme light        # light color scheme (default: dark)
+databricks-tui --theme light        # or catppuccin-mocha, catppuccin-latte,
+                                    # gruvbox, dracula, nord, tokyo-night
 ```
 
 The Clusters pane shows interactive (UI/API-created) clusters only —
@@ -114,7 +117,7 @@ them can be slow on busy workspaces.
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |
 | `Esc` | Close details / exit zoom |
-| `t` | Toggle light/dark theme |
+| `t` | Cycle color themes (dark, light, Catppuccin, Gruvbox, Dracula, Nord, Tokyo Night) |
 | `r` | Force refresh |
 | `q` / `Ctrl+C` | Quit |
 

@@ -9,13 +9,42 @@ use tokio::sync::{mpsc, oneshot};
 pub enum ThemeMode {
     Dark,
     Light,
+    CatppuccinMocha,
+    CatppuccinLatte,
+    GruvboxDark,
+    Dracula,
+    Nord,
+    TokyoNight,
 }
 
 impl ThemeMode {
+    pub const ALL: &'static [ThemeMode] = &[
+        ThemeMode::Dark,
+        ThemeMode::Light,
+        ThemeMode::CatppuccinMocha,
+        ThemeMode::CatppuccinLatte,
+        ThemeMode::GruvboxDark,
+        ThemeMode::Dracula,
+        ThemeMode::Nord,
+        ThemeMode::TokyoNight,
+    ];
+
+    /// The next theme in the cycle — what `t` steps through.
     pub fn toggled(self) -> Self {
+        let idx = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+
+    pub fn name(&self) -> &'static str {
         match self {
-            ThemeMode::Dark => ThemeMode::Light,
-            ThemeMode::Light => ThemeMode::Dark,
+            ThemeMode::Dark => "Dark (terminal colors)",
+            ThemeMode::Light => "Light",
+            ThemeMode::CatppuccinMocha => "Catppuccin Mocha",
+            ThemeMode::CatppuccinLatte => "Catppuccin Latte",
+            ThemeMode::GruvboxDark => "Gruvbox Dark",
+            ThemeMode::Dracula => "Dracula",
+            ThemeMode::Nord => "Nord",
+            ThemeMode::TokyoNight => "Tokyo Night",
         }
     }
 }

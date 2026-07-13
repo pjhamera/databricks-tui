@@ -36,7 +36,7 @@ fn entry(v: &Value, kind: &str) -> ListItem {
 /// no path → catalogs, [catalog] → schemas, [catalog, schema] → tables,
 /// views and volumes.
 pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
-    let items = match path {
+    let mut items: Vec<ListItem> = match path {
         [] => items_of(&cli.run(&["catalogs", "list"]).await?)
             .iter()
             .map(|c| entry(c, "CATALOG"))
@@ -71,5 +71,6 @@ pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
             items
         }
     };
+    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(Shape::List(items))
 }

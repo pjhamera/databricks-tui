@@ -26,6 +26,17 @@ struct Palette {
     pipelines: Color,
     warehouses: Color,
     catalog: Color,
+    /// Header wordmark gradient endpoints.
+    grad_from: (u8, u8, u8),
+    grad_to: (u8, u8, u8),
+}
+
+const fn rgb(hex: u32) -> Color {
+    Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
+const fn rgb3(hex: u32) -> (u8, u8, u8) {
+    ((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
 fn palette(mode: ThemeMode) -> Palette {
@@ -44,23 +55,129 @@ fn palette(mode: ThemeMode) -> Palette {
             jobs: Color::Magenta,
             pipelines: Color::Green,
             warehouses: Color::Blue,
-            catalog: Color::Rgb(255, 140, 66),
+            catalog: rgb(0xFF8C42),
+            grad_from: rgb3(0xFF3621),
+            grad_to: rgb3(0xFFA046),
         },
         // Light theme uses explicit darker shades that stay readable on a white background.
         ThemeMode::Light => Palette {
             text: Color::Black,
-            dim: Color::Rgb(107, 114, 128),
-            border: Color::Rgb(156, 163, 175),
-            warn: Color::Rgb(180, 83, 9),
-            ok: Color::Rgb(21, 128, 61),
-            err: Color::Rgb(185, 28, 28),
-            key: Color::Rgb(8, 145, 178),
-            brand: Color::Rgb(220, 38, 38),
-            clusters: Color::Rgb(8, 145, 178),
-            jobs: Color::Rgb(162, 28, 175),
-            pipelines: Color::Rgb(21, 128, 61),
-            warehouses: Color::Rgb(29, 78, 216),
-            catalog: Color::Rgb(194, 65, 12),
+            dim: rgb(0x6B7280),
+            border: rgb(0x9CA3AF),
+            warn: rgb(0xB45309),
+            ok: rgb(0x15803D),
+            err: rgb(0xB91C1C),
+            key: rgb(0x0891B2),
+            brand: rgb(0xDC2626),
+            clusters: rgb(0x0891B2),
+            jobs: rgb(0xA21CAF),
+            pipelines: rgb(0x15803D),
+            warehouses: rgb(0x1D4ED8),
+            catalog: rgb(0xC2410C),
+            grad_from: rgb3(0xB91C1C),
+            grad_to: rgb3(0xC2410C),
+        },
+        ThemeMode::CatppuccinMocha => Palette {
+            text: rgb(0xCDD6F4),
+            dim: rgb(0x6C7086),
+            border: rgb(0x585B70),
+            warn: rgb(0xF9E2AF),
+            ok: rgb(0xA6E3A1),
+            err: rgb(0xF38BA8),
+            key: rgb(0x89DCEB),
+            brand: rgb(0xF38BA8),
+            clusters: rgb(0x89DCEB),
+            jobs: rgb(0xCBA6F7),
+            pipelines: rgb(0xA6E3A1),
+            warehouses: rgb(0x89B4FA),
+            catalog: rgb(0xFAB387),
+            grad_from: rgb3(0xF38BA8),
+            grad_to: rgb3(0xFAB387),
+        },
+        ThemeMode::CatppuccinLatte => Palette {
+            text: rgb(0x4C4F69),
+            dim: rgb(0x8C8FA1),
+            border: rgb(0xACB0BE),
+            warn: rgb(0xDF8E1D),
+            ok: rgb(0x40A02B),
+            err: rgb(0xD20F39),
+            key: rgb(0x04A5E5),
+            brand: rgb(0xD20F39),
+            clusters: rgb(0x04A5E5),
+            jobs: rgb(0x8839EF),
+            pipelines: rgb(0x40A02B),
+            warehouses: rgb(0x1E66F5),
+            catalog: rgb(0xFE640B),
+            grad_from: rgb3(0xD20F39),
+            grad_to: rgb3(0xFE640B),
+        },
+        ThemeMode::GruvboxDark => Palette {
+            text: rgb(0xEBDBB2),
+            dim: rgb(0x928374),
+            border: rgb(0x665C54),
+            warn: rgb(0xFABD2F),
+            ok: rgb(0xB8BB26),
+            err: rgb(0xFB4934),
+            key: rgb(0x8EC07C),
+            brand: rgb(0xFB4934),
+            clusters: rgb(0x8EC07C),
+            jobs: rgb(0xD3869B),
+            pipelines: rgb(0xB8BB26),
+            warehouses: rgb(0x83A598),
+            catalog: rgb(0xFE8019),
+            grad_from: rgb3(0xFB4934),
+            grad_to: rgb3(0xFE8019),
+        },
+        ThemeMode::Dracula => Palette {
+            text: rgb(0xF8F8F2),
+            dim: rgb(0x6272A4),
+            border: rgb(0x44475A),
+            warn: rgb(0xF1FA8C),
+            ok: rgb(0x50FA7B),
+            err: rgb(0xFF5555),
+            key: rgb(0x8BE9FD),
+            brand: rgb(0xFF5555),
+            clusters: rgb(0x8BE9FD),
+            jobs: rgb(0xFF79C6),
+            pipelines: rgb(0x50FA7B),
+            warehouses: rgb(0xBD93F9),
+            catalog: rgb(0xFFB86C),
+            grad_from: rgb3(0xFF5555),
+            grad_to: rgb3(0xFFB86C),
+        },
+        ThemeMode::Nord => Palette {
+            text: rgb(0xD8DEE9),
+            dim: rgb(0x4C566A),
+            border: rgb(0x434C5E),
+            warn: rgb(0xEBCB8B),
+            ok: rgb(0xA3BE8C),
+            err: rgb(0xBF616A),
+            key: rgb(0x88C0D0),
+            brand: rgb(0xBF616A),
+            clusters: rgb(0x88C0D0),
+            jobs: rgb(0xB48EAD),
+            pipelines: rgb(0xA3BE8C),
+            warehouses: rgb(0x81A1C1),
+            catalog: rgb(0xD08770),
+            grad_from: rgb3(0xBF616A),
+            grad_to: rgb3(0xD08770),
+        },
+        ThemeMode::TokyoNight => Palette {
+            text: rgb(0xC0CAF5),
+            dim: rgb(0x565F89),
+            border: rgb(0x3B4261),
+            warn: rgb(0xE0AF68),
+            ok: rgb(0x9ECE6A),
+            err: rgb(0xF7768E),
+            key: rgb(0x7DCFFF),
+            brand: rgb(0xF7768E),
+            clusters: rgb(0x7DCFFF),
+            jobs: rgb(0xBB9AF7),
+            pipelines: rgb(0x9ECE6A),
+            warehouses: rgb(0x7AA2F7),
+            catalog: rgb(0xFF9E64),
+            grad_from: rgb3(0xF7768E),
+            grad_to: rgb3(0xFF9E64),
         },
     }
 }
@@ -1034,13 +1151,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Brand block: a two-tone brick mark, then DATABRICKS in a red→orange
+    // Brand block: a two-tone brick mark, then DATABRICKS in the theme's
     // gradient with a bright shimmer sweeping across it while data loads,
     // then LAKEHOUSE letter-spaced in the accent color.
-    let (from, to) = match app.theme {
-        ThemeMode::Dark => ((255u8, 54u8, 33u8), (255u8, 160u8, 70u8)),
-        ThemeMode::Light => ((185u8, 28u8, 28u8), (194u8, 65u8, 12u8)),
-    };
+    let (from, to) = (p.grad_from, p.grad_to);
     let grad = |t: f32| {
         Color::Rgb(
             (from.0 as f32 + (to.0 as f32 - from.0 as f32) * t) as u8,

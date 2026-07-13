@@ -39,6 +39,12 @@ struct Cli {
 enum ThemeArg {
     Dark,
     Light,
+    CatppuccinMocha,
+    CatppuccinLatte,
+    Gruvbox,
+    Dracula,
+    Nord,
+    TokyoNight,
 }
 
 impl From<ThemeArg> for ThemeMode {
@@ -46,6 +52,12 @@ impl From<ThemeArg> for ThemeMode {
         match t {
             ThemeArg::Dark => ThemeMode::Dark,
             ThemeArg::Light => ThemeMode::Light,
+            ThemeArg::CatppuccinMocha => ThemeMode::CatppuccinMocha,
+            ThemeArg::CatppuccinLatte => ThemeMode::CatppuccinLatte,
+            ThemeArg::Gruvbox => ThemeMode::GruvboxDark,
+            ThemeArg::Dracula => ThemeMode::Dracula,
+            ThemeArg::Nord => ThemeMode::Nord,
+            ThemeArg::TokyoNight => ThemeMode::TokyoNight,
         }
     }
 }
@@ -498,6 +510,8 @@ async fn run(
                         }
                         (KeyCode::Char('t'), _) => {
                             app.theme = app.theme.toggled();
+                            app.flash =
+                                Some((format!("✓ theme: {}", app.theme.name()), Instant::now()));
                             needs_redraw = true;
                         }
                         (KeyCode::Char('w'), _) => {
