@@ -126,6 +126,8 @@ pub fn draw(f: &mut Frame, app: &App) {
             false,
             &app.uc_path.join("."),
             app.spinner(),
+            &app.filters[idx],
+            app.filter_entry,
             &p,
         );
         // Overlays must still render on top of the zoomed pane.
@@ -177,6 +179,8 @@ pub fn draw(f: &mut Frame, app: &App) {
             fresh,
             &app.uc_path.join("."),
             app.spinner(),
+            &app.filters[i],
+            app.filter_entry && focused,
             &p,
         );
     }
@@ -765,6 +769,23 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
+    if app.filter_entry {
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" /{}", app.active_filter()),
+                Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("▏", Style::default().fg(p.warn)),
+            dim("  type to filter   "),
+            key("enter"),
+            dim(" apply   "),
+            key("esc"),
+            dim(" clear"),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
     let spans = if app.cost.is_some() {
         vec![
             dim(" "),
@@ -838,6 +859,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim("/"),
             key("k"),
             dim(" select   "),
+            key("/"),
+            dim(if app.active_filter().is_empty() {
+                " filter   "
+            } else {
+                " filter · esc clears   "
+            }),
             key("enter"),
             dim(if app.focus == Panel::Catalog && app.uc_path.len() < 2 {
                 " open   "
@@ -899,6 +926,8 @@ fn draw_panel(
     fresh: bool,
     breadcrumb: &str,
     spinner: &str,
+    filter: &str,
+    entering: bool,
     p: &Palette,
 ) {
     let accent = accent(panel, p);
@@ -910,9 +939,22 @@ fn draw_panel(
     } else {
         (Style::default().fg(p.border), Style::default().fg(p.dim))
     };
-    let count = match shape {
-        Some(Shape::List(items)) => format!(" · {}", items.len()),
-        Some(Shape::Table(data)) => format!(" · {}", data.rows.len()),
+    let visible: Option<Vec<&crate::shape::ListItem>> = match shape {
+        Some(Shape::List(items)) => Some(
+            items
+                .iter()
+                .filter(|it| crate::shape::item_matches(it, filter))
+                .collect(),
+        ),
+        _ => None,
+    };
+    let count = match (&visible, shape) {
+        // With a filter active, show how many made the cut.
+        (Some(v), Some(Shape::List(items))) if !filter.is_empty() || entering => {
+            format!(" · {}/{}", v.len(), items.len())
+        }
+        (Some(v), _) => format!(" · {}", v.len()),
+        (_, Some(Shape::Table(data))) => format!(" · {}", data.rows.len()),
         _ => String::new(),
     };
     let crumb = if panel == Panel::Catalog && !breadcrumb.is_empty() {
@@ -929,10 +971,17 @@ fn draw_panel(
     } else {
         title_style
     };
-    let title = Line::from(vec![
+    let mut title_spans = vec![
         Span::styled(format!(" {} ", panel.icon()), Style::default().fg(accent)),
         Span::styled(format!("{}{}{} ", panel.title(), crumb, count), title_style),
-    ]);
+    ];
+    if entering || !filter.is_empty() {
+        title_spans.push(Span::styled(
+            format!("/{}{} ", filter, if entering { "▏" } else { "" }),
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let title = Line::from(title_spans);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -951,22 +1000,28 @@ fn draw_panel(
                 .block(block);
             f.render_widget(par, area);
         }
-        Some(Shape::List(items)) if items.is_empty() => {
-            let empty = match panel {
-                Panel::Clusters => "no compute running",
-                Panel::Jobs => "no jobs defined",
-                Panel::Pipelines => "no pipelines",
-                Panel::Warehouses => "no warehouses",
-                Panel::Dashboards => "no dashboards yet",
-                Panel::Catalog => "nothing at this level",
+        Some(Shape::List(items)) if visible.as_ref().is_none_or(|v| v.is_empty()) => {
+            let empty = if !items.is_empty() {
+                format!("∅ nothing matches /{filter}")
+            } else {
+                let msg = match panel {
+                    Panel::Clusters => "no compute running",
+                    Panel::Jobs => "no jobs defined",
+                    Panel::Pipelines => "no pipelines",
+                    Panel::Warehouses => "no warehouses",
+                    Panel::Dashboards => "no dashboards yet",
+                    Panel::Catalog => "nothing at this level",
+                };
+                format!("∅ {msg}")
             };
-            let par = Paragraph::new(format!("∅ {empty}"))
+            let par = Paragraph::new(empty)
                 .style(Style::default().fg(p.dim))
                 .block(block);
             f.render_widget(par, area);
         }
-        Some(Shape::List(items)) => {
-            let list_items: Vec<ListItem> = items
+        Some(Shape::List(_)) => {
+            let list_items: Vec<ListItem> = visible
+                .unwrap_or_default()
                 .iter()
                 .map(|item| {
                     let color = status_color(&item.status, p);

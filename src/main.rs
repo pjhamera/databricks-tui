@@ -331,10 +331,29 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.filter_entry {
+                    // All printable keys go into the query while typing.
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) => app.filter_clear(),
+                        (KeyCode::Enter, _) => app.filter_accept(),
+                        (KeyCode::Backspace, _) => app.filter_pop(),
+                        (KeyCode::Char(ch), _) => app.filter_push(ch),
+                        _ => {}
+                    }
+                    needs_redraw = true;
                 } else {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             break
+                        }
+                        (KeyCode::Char('/'), _) => {
+                            app.filter_start();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Esc, _) if !app.active_filter().is_empty() => {
+                            app.filter_clear();
+                            needs_redraw = true;
                         }
                         (KeyCode::Tab, _) | (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
                             app.focus_next();

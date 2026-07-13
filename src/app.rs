@@ -173,6 +173,10 @@ pub struct App {
     pub splash_until: Option<Instant>,
     /// When each pane last received fresh data — drives the title flash.
     pub updated_at: [Option<Instant>; 6],
+    /// Per-pane search filter; empty string means no filter.
+    pub filters: [String; 6],
+    /// True while the user is typing a filter for the focused pane.
+    pub filter_entry: bool,
 }
 
 impl App {
@@ -213,6 +217,8 @@ impl App {
             spinner_frame: 0,
             splash_until: Some(Instant::now() + Duration::from_millis(1600)),
             updated_at: [None; 6],
+            filters: Default::default(),
+            filter_entry: false,
         }
     }
 
@@ -289,6 +295,8 @@ impl App {
         self.in_flight = 0;
         self.loading = false;
         self.zoomed = false;
+        self.filters = Default::default();
+        self.filter_entry = false;
 
         Some(Arc::new(DatabricksCli::new(profile_arg)))
     }
@@ -334,7 +342,10 @@ impl App {
 
     fn list_len(&self, idx: usize) -> usize {
         match &self.shapes[idx] {
-            Some(Shape::List(items)) => items.len(),
+            Some(Shape::List(items)) => items
+                .iter()
+                .filter(|it| crate::shape::item_matches(it, &self.filters[idx]))
+                .count(),
             _ => 0,
         }
     }
@@ -357,13 +368,54 @@ impl App {
         self.selected[idx] = self.selection(idx).saturating_sub(1);
     }
 
-    /// The currently highlighted item in the focused panel.
+    /// The currently highlighted item in the focused panel, respecting
+    /// the pane's filter — the nth *visible* item, like the UI shows.
     fn selected_item(&self) -> Option<&crate::shape::ListItem> {
         let idx = self.focus_index();
         match &self.shapes[idx] {
-            Some(Shape::List(items)) => items.get(self.selection(idx)),
+            Some(Shape::List(items)) => items
+                .iter()
+                .filter(|it| crate::shape::item_matches(it, &self.filters[idx]))
+                .nth(self.selection(idx)),
             _ => None,
         }
+    }
+
+    /// Opens filter entry for the focused pane, starting from scratch.
+    pub fn filter_start(&mut self) {
+        let idx = self.focus_index();
+        self.filters[idx].clear();
+        self.selected[idx] = 0;
+        self.filter_entry = true;
+    }
+
+    pub fn filter_push(&mut self, c: char) {
+        let idx = self.focus_index();
+        self.filters[idx].push(c);
+        self.selected[idx] = 0;
+    }
+
+    pub fn filter_pop(&mut self) {
+        let idx = self.focus_index();
+        self.filters[idx].pop();
+        self.selected[idx] = 0;
+    }
+
+    /// Keeps the filter applied and returns keys to normal navigation.
+    pub fn filter_accept(&mut self) {
+        self.filter_entry = false;
+    }
+
+    pub fn filter_clear(&mut self) {
+        let idx = self.focus_index();
+        self.filters[idx].clear();
+        self.selected[idx] = 0;
+        self.filter_entry = false;
+    }
+
+    /// The focused pane's filter, if any.
+    pub fn active_filter(&self) -> &str {
+        &self.filters[self.focus_index()]
     }
 
     pub fn open_detail(&mut self, cli: &Arc<DatabricksCli>) {
@@ -434,6 +486,8 @@ impl App {
     fn refresh_catalog(&mut self, cli: &Arc<DatabricksCli>) {
         self.shapes[5] = None;
         self.selected[5] = 0;
+        // A filter typed at one level would silently hide the next.
+        self.filters[5].clear();
         let (tx, rx) = oneshot::channel();
         self.uc_rx = Some(rx);
         let cli = Arc::clone(cli);
@@ -1101,7 +1155,17 @@ impl App {
             match rx.try_recv() {
                 Ok(Update::Panel(i, result)) => {
                     match result {
-                        Ok(shape) => {
+                        Ok(mut shape) => {
+                            // Active work floats to the top of every pane
+                            // except the catalog, which stays browsable
+                            // in its natural (alphabetical) order.
+                            if i != 5 {
+                                if let Shape::List(items) = &mut shape {
+                                    items.sort_by_key(|it| {
+                                        (it.status.rank(), it.history.is_empty())
+                                    });
+                                }
+                            }
                             self.shapes[i] = Some(shape);
                             self.updated_at[i] = Some(Instant::now());
                         }

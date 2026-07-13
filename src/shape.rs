@@ -31,6 +31,19 @@ impl FromStr for Status {
 }
 
 impl Status {
+    /// Sort priority for active-first pane ordering: running work on top,
+    /// then starting, failures needing attention, finished, idle, the rest.
+    pub fn rank(&self) -> u8 {
+        match self {
+            Status::Running => 0,
+            Status::Pending => 1,
+            Status::Failed => 2,
+            Status::Success => 3,
+            Status::Stopped => 4,
+            Status::Unknown(_) => 5,
+        }
+    }
+
     pub fn label(&self) -> &str {
         match self {
             Status::Running => "RUNNING",
@@ -93,6 +106,21 @@ impl Default for Status {
     fn default() -> Self {
         Status::Unknown(String::new())
     }
+}
+
+/// Case-insensitive substring match against an item's name, detail text
+/// and status label — so `/running` greps for running things.
+pub fn item_matches(item: &ListItem, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let q = query.to_lowercase();
+    item.name.to_lowercase().contains(&q)
+        || item
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.to_lowercase().contains(&q))
+        || item.status.label().to_lowercase().contains(&q)
 }
 
 /// Structured content for the item detail view.

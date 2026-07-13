@@ -8,6 +8,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Five color-coded panes that populate independently as each data source responds
 - Jobs show their latest run result and a `✓✗✓` history strip, not just the config
 - Health summary in the header: running / pending / failed / idle counts at a glance
+- Active work floats to the top of every pane: running clusters, jobs and
+  warehouses first, then pending, failures, finished, idle
+- Grep any pane with `/`: filter by name, detail text or status
+  (`/running` shows only running things)
 - Drill into any item: formatted key facts and recent activity, raw JSON one key away
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
 - Inspect access: effective Unity Catalog grants (with inheritance) and
@@ -86,6 +90,7 @@ them can be slow on busy workspaces.
 | `Tab` / `→` / `l` | Focus next panel |
 | `Shift+Tab` / `←` / `h` | Focus previous panel |
 | `↓` / `j`, `↑` / `k` | Select item in focused panel |
+| `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog) |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse) |
