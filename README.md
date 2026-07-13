@@ -59,7 +59,13 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 
 ## Install
 
-Download the latest release for your platform from the
+With Homebrew (macOS and Linux):
+
+```bash
+brew install pjhamera/tap/databricks-tui
+```
+
+Or download the latest release for your platform from the
 [releases page](https://github.com/pjhamera/databricks-tui/releases):
 
 ```bash
