@@ -141,6 +141,8 @@ enum PickTarget {
 /// Free-form SQL prompt with results, backed by the preview machinery.
 pub struct SqlConsole {
     pub input: String,
+    /// Caret position in `input`, counted in characters.
+    pub cursor: usize,
     /// Display name of the warehouse the last query ran on.
     pub warehouse: String,
     pub running: bool,
@@ -148,6 +150,15 @@ pub struct SqlConsole {
     /// The statement that produced `data`.
     pub last_sql: String,
     pub scroll: usize,
+}
+
+/// Byte offset of the `cursor`th character in `input`.
+fn byte_at(input: &str, cursor: usize) -> usize {
+    input
+        .char_indices()
+        .nth(cursor)
+        .map(|(i, _)| i)
+        .unwrap_or(input.len())
 }
 
 /// Overlay for choosing which SQL warehouse runs a query.
@@ -883,6 +894,7 @@ impl App {
                 .map(|fqn| format!("SELECT * FROM {fqn} LIMIT 100"))
                 .unwrap_or_default();
             self.sql = Some(SqlConsole {
+                cursor: input.chars().count(),
                 input,
                 warehouse: String::new(),
                 running: false,
@@ -900,13 +912,54 @@ impl App {
 
     pub fn sql_push(&mut self, c: char) {
         if let Some(console) = &mut self.sql {
-            console.input.push(c);
+            let at = byte_at(&console.input, console.cursor);
+            console.input.insert(at, c);
+            console.cursor += 1;
         }
     }
 
+    /// Backspace: deletes the character before the caret.
     pub fn sql_pop(&mut self) {
         if let Some(console) = &mut self.sql {
-            console.input.pop();
+            if console.cursor > 0 {
+                let at = byte_at(&console.input, console.cursor - 1);
+                console.input.remove(at);
+                console.cursor -= 1;
+            }
+        }
+    }
+
+    /// Delete: removes the character under the caret.
+    pub fn sql_delete(&mut self) {
+        if let Some(console) = &mut self.sql {
+            if console.cursor < console.input.chars().count() {
+                let at = byte_at(&console.input, console.cursor);
+                console.input.remove(at);
+            }
+        }
+    }
+
+    pub fn sql_left(&mut self) {
+        if let Some(console) = &mut self.sql {
+            console.cursor = console.cursor.saturating_sub(1);
+        }
+    }
+
+    pub fn sql_right(&mut self) {
+        if let Some(console) = &mut self.sql {
+            console.cursor = (console.cursor + 1).min(console.input.chars().count());
+        }
+    }
+
+    pub fn sql_home(&mut self) {
+        if let Some(console) = &mut self.sql {
+            console.cursor = 0;
+        }
+    }
+
+    pub fn sql_end(&mut self) {
+        if let Some(console) = &mut self.sql {
+            console.cursor = console.input.chars().count();
         }
     }
 

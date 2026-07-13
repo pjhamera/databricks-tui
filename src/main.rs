@@ -320,9 +320,16 @@ async fn run(
                     // Printable keys type into the prompt.
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Char('a'), KeyModifiers::CONTROL) => app.sql_home(),
+                        (KeyCode::Char('e'), KeyModifiers::CONTROL) => app.sql_end(),
                         (KeyCode::Esc, _) => app.close_sql(),
                         (KeyCode::Enter, _) => app.sql_run(&cli),
                         (KeyCode::Backspace, _) => app.sql_pop(),
+                        (KeyCode::Delete, _) => app.sql_delete(),
+                        (KeyCode::Left, _) => app.sql_left(),
+                        (KeyCode::Right, _) => app.sql_right(),
+                        (KeyCode::Home, _) => app.sql_home(),
+                        (KeyCode::End, _) => app.sql_end(),
                         (KeyCode::Up, _) => app.sql_scroll(-1),
                         (KeyCode::Down, _) => app.sql_scroll(1),
                         (KeyCode::Char(ch), _) => app.sql_push(ch),

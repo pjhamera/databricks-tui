@@ -827,11 +827,24 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .add_modifier(Modifier::BOLD),
         )
         .padding(Padding::horizontal(1));
+    // Caret sits at the cursor, not the end; long inputs scroll so the
+    // caret stays visible.
+    let caret_byte = console
+        .input
+        .char_indices()
+        .nth(console.cursor)
+        .map(|(i, _)| i)
+        .unwrap_or(console.input.len());
+    let (before, after) = console.input.split_at(caret_byte);
+    let inner_w = parts[0].width.saturating_sub(4) as usize; // borders + padding
+    let hscroll = (console.cursor + 3).saturating_sub(inner_w) as u16;
     let prompt = Paragraph::new(Line::from(vec![
         Span::styled("❯ ", Style::default().fg(p.key)),
-        Span::styled(console.input.as_str(), Style::default().fg(p.text)),
+        Span::styled(before, Style::default().fg(p.text)),
         Span::styled("▏", Style::default().fg(p.warn)),
+        Span::styled(after, Style::default().fg(p.text)),
     ]))
+    .scroll((0, hscroll))
     .block(prompt_block);
     f.render_widget(prompt, parts[0]);
 
