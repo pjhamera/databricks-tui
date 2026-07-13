@@ -72,8 +72,9 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -o pipefail
-          if ! cargo publish 2>&1 | tee publish.log; then
-            grep -q "already uploaded" publish.log
+          # Log outside the workspace — cargo refuses a dirty worktree.
+          if ! cargo publish 2>&1 | tee /tmp/publish.log; then
+            grep -q "already uploaded" /tmp/publish.log
           fi
 
   # Bumps the Homebrew formula in pjhamera/homebrew-tap to this release.
@@ -131,5 +132,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/databricks-tui.rb
-          git commit -m "databricks-tui ${VERSION}"
+          # A re-pushed tag can produce an identical formula — that's fine.
+          git commit -m "databricks-tui ${VERSION}" || exit 0
           git push
