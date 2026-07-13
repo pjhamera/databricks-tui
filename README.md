@@ -17,7 +17,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   per-task states, durations and the actual error output of failed tasks;
   live runs refresh themselves every few seconds
 - SQL console (`:`): type a statement, run it on a warehouse, page through
-  results — the whole lakehouse is queryable from the dashboard
+  results — the whole lakehouse is queryable from the dashboard; with a
+  table/view selected in the catalog pane, the prompt opens pre-filled with
+  `SELECT * FROM catalog.schema.table LIMIT 100`, ready to edit
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs

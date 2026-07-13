@@ -848,12 +848,28 @@ impl App {
         self.cost_rx = None;
     }
 
-    /// Opens the SQL console. Reopening keeps nothing — each session
-    /// starts from a fresh prompt.
+    /// The fully-qualified name of the selected catalog-pane table/view.
+    fn selected_table_fqn(&self) -> Option<String> {
+        if self.focus != Panel::Catalog {
+            return None;
+        }
+        let item = self.selected_item()?;
+        if !matches!(&item.status, Status::Unknown(k) if k == "TABLE" || k == "VIEW") {
+            return None;
+        }
+        item.id.clone()
+    }
+
+    /// Opens the SQL console. With a table/view selected in the catalog
+    /// pane, the prompt starts as an editable query against it.
     pub fn open_sql(&mut self) {
         if self.sql.is_none() {
+            let input = self
+                .selected_table_fqn()
+                .map(|fqn| format!("SELECT * FROM {fqn} LIMIT 100"))
+                .unwrap_or_default();
             self.sql = Some(SqlConsole {
-                input: String::new(),
+                input,
                 warehouse: String::new(),
                 running: false,
                 data: None,

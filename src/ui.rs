@@ -1434,6 +1434,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                     spans.push(dim(" preview   "));
                     spans.push(key("L"));
                     spans.push(dim(" lineage   "));
+                    spans.push(key(":"));
+                    spans.push(dim(" query table   "));
                 }
             }
             Panel::Dashboards => {}
@@ -1449,8 +1451,13 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" cost   "),
             key("!"),
             dim(" problems   "),
-            key(":"),
-            dim(" sql   "),
+        ]);
+        // At the catalog's table level the ':' hint already reads "query table".
+        if !(app.focus == Panel::Catalog && app.uc_path.len() == 2) {
+            spans.push(key(":"));
+            spans.push(dim(" sql   "));
+        }
+        spans.extend([
             key("o"),
             dim(" open   "),
             key("z"),
