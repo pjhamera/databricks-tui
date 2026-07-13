@@ -106,6 +106,19 @@ enum PickTarget {
     Preview(String),
     Cost,
     Lineage(String),
+    Sql(String),
+}
+
+/// Free-form SQL prompt with results, backed by the preview machinery.
+pub struct SqlConsole {
+    pub input: String,
+    /// Display name of the warehouse the last query ran on.
+    pub warehouse: String,
+    pub running: bool,
+    pub data: Option<Result<crate::shape::TableData, String>>,
+    /// The statement that produced `data`.
+    pub last_sql: String,
+    pub scroll: usize,
 }
 
 /// Overlay for choosing which SQL warehouse runs a query.
@@ -118,6 +131,43 @@ pub struct WhPicker {
 pub struct CostView {
     pub warehouse: String,
     pub data: Option<Result<fetchers::cost::CostData, String>>,
+}
+
+/// Drill-down into a single job run, layered over the job detail view.
+pub struct RunView {
+    pub job_name: String,
+    /// Recent runs newest-first: (run_id, status, age).
+    pub runs: Vec<(String, Status, String)>,
+    /// Which of `runs` is shown.
+    pub idx: usize,
+    pub data: Option<DetailData>,
+    pub show_raw: bool,
+    pub scroll: u16,
+    /// True while the shown run is still executing — drives auto-refresh.
+    pub live: bool,
+    fetched_at: Instant,
+}
+
+/// (recent runs, detail of the newest, still-executing flag)
+type RunOpened = (Vec<(String, Status, String)>, DetailData, bool);
+
+enum RunUpdate {
+    Opened(Result<RunOpened, String>),
+    Detail(DetailData, bool),
+}
+
+/// One unhealthy resource, pointing back at its pane and item.
+pub struct Problem {
+    pub panel: usize,
+    pub name: String,
+    pub status: Status,
+    pub note: String,
+}
+
+/// Overlay collecting everything currently failing across the panes.
+pub struct Problems {
+    pub items: Vec<Problem>,
+    pub index: usize,
 }
 
 /// A pending destructive/mutating action awaiting a y/n keystroke.
@@ -153,6 +203,8 @@ pub struct App {
     pub profile: Option<String>,
     /// When Some, the workspace picker overlay is open at this index.
     pub picker: Option<usize>,
+    /// When Some, the problems overlay is open.
+    pub problems: Option<Problems>,
     /// Current position in the Unity Catalog tree: [], [catalog] or [catalog, schema].
     pub uc_path: Vec<String>,
     uc_rx: Option<oneshot::Receiver<Result<Shape, String>>>,
@@ -163,6 +215,10 @@ pub struct App {
     pub preview_warehouse: Option<(String, String)>,
     pub cost: Option<CostView>,
     cost_rx: Option<oneshot::Receiver<Result<fetchers::cost::CostData, String>>>,
+    pub sql: Option<SqlConsole>,
+    sql_rx: Option<oneshot::Receiver<Result<crate::shape::TableData, String>>>,
+    pub run_view: Option<RunView>,
+    run_rx: Option<oneshot::Receiver<RunUpdate>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
     detail_rx: Option<oneshot::Receiver<DetailData>>,
     action_rx: Option<oneshot::Receiver<Result<String, String>>>,
@@ -201,6 +257,7 @@ impl App {
             profiles: Vec::new(),
             profile: None,
             picker: None,
+            problems: None,
             uc_path: Vec::new(),
             uc_rx: None,
             preview: None,
@@ -209,6 +266,10 @@ impl App {
             preview_warehouse: None,
             cost: None,
             cost_rx: None,
+            sql: None,
+            sql_rx: None,
+            run_view: None,
+            run_rx: None,
             pending: None,
             detail_rx: None,
             action_rx: None,
@@ -283,6 +344,7 @@ impl App {
         self.detail = None;
         self.detail_rx = None;
         self.confirm = None;
+        self.problems = None;
         self.uc_path.clear();
         self.uc_rx = None;
         self.preview = None;
@@ -291,6 +353,10 @@ impl App {
         self.preview_warehouse = None;
         self.cost = None;
         self.cost_rx = None;
+        self.sql = None;
+        self.sql_rx = None;
+        self.run_view = None;
+        self.run_rx = None;
         self.pending = None;
         self.in_flight = 0;
         self.loading = false;
@@ -299,6 +365,68 @@ impl App {
         self.filter_entry = false;
 
         Some(Arc::new(DatabricksCli::new(profile_arg)))
+    }
+
+    /// Collects everything unhealthy across the loaded panes: items whose
+    /// status is failed, or whose most recent run failed.
+    pub fn open_problems(&mut self) {
+        let mut items = Vec::new();
+        for (i, shape) in self.shapes.iter().enumerate() {
+            let Some(Shape::List(list)) = shape else {
+                continue;
+            };
+            for it in list {
+                let failed_now = matches!(it.status, Status::Failed);
+                let failed_last = it
+                    .history
+                    .last()
+                    .is_some_and(|s| matches!(s, Status::Failed));
+                if failed_now || failed_last {
+                    let note = if failed_now {
+                        it.detail.clone().unwrap_or_default()
+                    } else {
+                        "latest run failed".to_string()
+                    };
+                    items.push(Problem {
+                        panel: i,
+                        name: it.name.clone(),
+                        status: it.status.clone(),
+                        note,
+                    });
+                }
+            }
+        }
+        self.problems = Some(Problems { items, index: 0 });
+    }
+
+    pub fn problems_next(&mut self) {
+        if let Some(pr) = &mut self.problems {
+            pr.index = (pr.index + 1).min(pr.items.len().saturating_sub(1));
+        }
+    }
+
+    pub fn problems_prev(&mut self) {
+        if let Some(pr) = &mut self.problems {
+            pr.index = pr.index.saturating_sub(1);
+        }
+    }
+
+    /// Jumps focus and selection to the highlighted problem's pane item.
+    pub fn problems_jump(&mut self) {
+        let Some(pr) = self.problems.take() else {
+            return;
+        };
+        let Some(problem) = pr.items.get(pr.index) else {
+            return;
+        };
+        self.focus = Panel::ALL[problem.panel];
+        // The pane's filter could hide the item we're jumping to.
+        self.filters[problem.panel].clear();
+        if let Some(Shape::List(list)) = &self.shapes[problem.panel] {
+            if let Some(pos) = list.iter().position(|i| i.name == problem.name) {
+                self.selected[problem.panel] = pos;
+            }
+        }
     }
 
     /// Resolves the workspace host in the background — `auth describe` can
@@ -500,6 +628,24 @@ impl App {
         });
     }
 
+    /// Looks up a resource's display name by id in the loaded panes —
+    /// lets the cost view show "nightly-etl" instead of a job id.
+    pub fn resource_name(&self, kind: &str, id: &str) -> Option<String> {
+        let idx = match kind {
+            "cluster" => 0,
+            "job" => 1,
+            "warehouse" => 3,
+            _ => return None,
+        };
+        match &self.shapes[idx] {
+            Some(Shape::List(items)) => items
+                .iter()
+                .find(|i| i.id.as_deref() == Some(id))
+                .map(|i| i.name.clone()),
+            _ => None,
+        }
+    }
+
     /// All known warehouses as (name, id, running).
     pub fn warehouses(&self) -> Vec<(String, String, bool)> {
         let Some(Shape::List(items)) = &self.shapes[3] else {
@@ -673,6 +819,138 @@ impl App {
         self.cost_rx = None;
     }
 
+    /// Opens the SQL console. Reopening keeps nothing — each session
+    /// starts from a fresh prompt.
+    pub fn open_sql(&mut self) {
+        if self.sql.is_none() {
+            self.sql = Some(SqlConsole {
+                input: String::new(),
+                warehouse: String::new(),
+                running: false,
+                data: None,
+                last_sql: String::new(),
+                scroll: 0,
+            });
+        }
+    }
+
+    pub fn close_sql(&mut self) {
+        self.sql = None;
+        self.sql_rx = None;
+    }
+
+    pub fn sql_push(&mut self, c: char) {
+        if let Some(console) = &mut self.sql {
+            console.input.push(c);
+        }
+    }
+
+    pub fn sql_pop(&mut self) {
+        if let Some(console) = &mut self.sql {
+            console.input.pop();
+        }
+    }
+
+    pub fn sql_scroll(&mut self, delta: i32) {
+        if let Some(console) = &mut self.sql {
+            let max = match &console.data {
+                Some(Ok(t)) => t.rows.len().saturating_sub(1),
+                _ => 0,
+            };
+            console.scroll = if delta < 0 {
+                console.scroll.saturating_sub(delta.unsigned_abs() as usize)
+            } else {
+                (console.scroll + delta as usize).min(max)
+            };
+        }
+    }
+
+    /// Runs the typed statement, resolving a warehouse like previews do.
+    pub fn sql_run(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(console) = &self.sql else {
+            return;
+        };
+        if console.running {
+            return;
+        }
+        let query = console.input.trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let warehouses = self.warehouses();
+        if warehouses.is_empty() {
+            self.flash = Some(("✗ no SQL warehouse available".to_string(), Instant::now()));
+            return;
+        }
+        if let Some((id, name)) = self.preview_warehouse.clone() {
+            self.start_sql_query(cli, query, id, name);
+            return;
+        }
+        if let [(name, id, _)] = warehouses.as_slice() {
+            self.preview_warehouse = Some((id.clone(), name.clone()));
+            self.start_sql_query(cli, query, id.clone(), name.clone());
+            return;
+        }
+        let index = warehouses
+            .iter()
+            .position(|(_, _, running)| *running)
+            .unwrap_or(0);
+        self.wh_picker = Some(WhPicker {
+            index,
+            target: PickTarget::Sql(query),
+        });
+    }
+
+    fn start_sql_query(
+        &mut self,
+        cli: &Arc<DatabricksCli>,
+        query: String,
+        id: String,
+        name: String,
+    ) {
+        if let Some(console) = &mut self.sql {
+            console.running = true;
+            console.warehouse = name;
+            console.scroll = 0;
+            console.last_sql = query.clone();
+        }
+        let (tx, rx) = oneshot::channel();
+        self.sql_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let result = fetchers::preview::run_sql(&cli, &query, &id).await;
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn poll_sql(&mut self) -> bool {
+        let Some(rx) = &mut self.sql_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                // A warehouse that errors shouldn't stay the session default.
+                if result.is_err() {
+                    self.preview_warehouse = None;
+                }
+                if let Some(console) = &mut self.sql {
+                    console.running = false;
+                    console.data = Some(result);
+                }
+                self.sql_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                if let Some(console) = &mut self.sql {
+                    console.running = false;
+                }
+                self.sql_rx = None;
+                true
+            }
+        }
+    }
+
     pub fn poll_cost(&mut self) -> bool {
         let Some(rx) = &mut self.cost_rx else {
             return false;
@@ -729,6 +1007,7 @@ impl App {
             }
             PickTarget::Cost => self.start_cost_query(cli, id.clone(), name.clone()),
             PickTarget::Lineage(table) => self.start_lineage_query(cli, table, id.clone()),
+            PickTarget::Sql(query) => self.start_sql_query(cli, query, id.clone(), name.clone()),
         }
     }
 
@@ -860,6 +1139,151 @@ impl App {
             let data = fetchers::grants::fetch(&cli, uc, object_type, &id).await;
             let _ = tx.send(data);
         });
+    }
+
+    /// Drills from an open job detail into its most recent run.
+    pub fn open_run(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(d) = &self.detail else {
+            return;
+        };
+        if d.panel != Panel::Jobs || d.section == "Lineage" {
+            return;
+        }
+        let job_id = d.id.clone();
+        self.run_view = Some(RunView {
+            job_name: d.name.clone(),
+            runs: Vec::new(),
+            idx: 0,
+            data: None,
+            show_raw: false,
+            scroll: 0,
+            live: false,
+            fetched_at: Instant::now(),
+        });
+        let (tx, rx) = oneshot::channel();
+        self.run_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let result = async {
+                let runs = fetchers::runs::list(&cli, &job_id).await?;
+                let Some((run_id, _, _)) = runs.first().cloned() else {
+                    return Err("this job has no runs yet".to_string());
+                };
+                let (data, live) = fetchers::runs::fetch(&cli, &run_id).await;
+                Ok((runs, data, live))
+            }
+            .await;
+            let _ = tx.send(RunUpdate::Opened(result));
+        });
+    }
+
+    pub fn close_run(&mut self) {
+        self.run_view = None;
+        self.run_rx = None;
+    }
+
+    /// Moves to an older (delta > 0) or newer (delta < 0) run.
+    pub fn run_nav(&mut self, cli: &Arc<DatabricksCli>, delta: i32) {
+        if self.run_rx.is_some() {
+            return;
+        }
+        let Some(rv) = &mut self.run_view else {
+            return;
+        };
+        if rv.runs.is_empty() {
+            return;
+        }
+        let new = if delta < 0 {
+            rv.idx.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            (rv.idx + delta as usize).min(rv.runs.len() - 1)
+        };
+        if new == rv.idx {
+            return;
+        }
+        rv.idx = new;
+        rv.data = None;
+        rv.scroll = 0;
+        rv.show_raw = false;
+        let run_id = rv.runs[new].0.clone();
+        self.start_run_fetch(cli, run_id);
+    }
+
+    fn start_run_fetch(&mut self, cli: &Arc<DatabricksCli>, run_id: String) {
+        let (tx, rx) = oneshot::channel();
+        self.run_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let (data, live) = fetchers::runs::fetch(&cli, &run_id).await;
+            let _ = tx.send(RunUpdate::Detail(data, live));
+        });
+    }
+
+    pub fn run_toggle_raw(&mut self) {
+        if let Some(rv) = &mut self.run_view {
+            rv.show_raw = !rv.show_raw;
+            rv.scroll = 0;
+        }
+    }
+
+    pub fn run_scroll(&mut self, delta: i32) {
+        if let Some(rv) = &mut self.run_view {
+            rv.scroll = if delta < 0 {
+                rv.scroll.saturating_sub(delta.unsigned_abs() as u16)
+            } else {
+                rv.scroll.saturating_add(delta as u16)
+            };
+        }
+    }
+
+    /// Applies run fetch results; also re-polls a live run every few
+    /// seconds so an executing run's tasks update on their own.
+    pub fn poll_run(&mut self, cli: &Arc<DatabricksCli>) -> bool {
+        if let Some(rx) = &mut self.run_rx {
+            match rx.try_recv() {
+                Ok(update) => {
+                    self.run_rx = None;
+                    if let Some(rv) = &mut self.run_view {
+                        match update {
+                            RunUpdate::Opened(Ok((runs, data, live))) => {
+                                rv.runs = runs;
+                                rv.idx = 0;
+                                rv.data = Some(data);
+                                rv.live = live;
+                            }
+                            RunUpdate::Opened(Err(e)) => {
+                                rv.data = Some(DetailData {
+                                    summary: Vec::new(),
+                                    activity: Vec::new(),
+                                    raw: format!("✗ {e}"),
+                                });
+                                rv.live = false;
+                            }
+                            RunUpdate::Detail(data, live) => {
+                                rv.data = Some(data);
+                                rv.live = live;
+                            }
+                        }
+                        rv.fetched_at = Instant::now();
+                    }
+                    true
+                }
+                Err(oneshot::error::TryRecvError::Empty) => false,
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    self.run_rx = None;
+                    true
+                }
+            }
+        } else if let Some(rv) = &self.run_view {
+            if rv.live && rv.data.is_some() && rv.fetched_at.elapsed() >= Duration::from_secs(5) {
+                if let Some((run_id, _, _)) = rv.runs.get(rv.idx).cloned() {
+                    self.start_run_fetch(cli, run_id);
+                }
+            }
+            false
+        } else {
+            false
+        }
     }
 
     pub fn close_detail(&mut self) {
@@ -1068,6 +1492,8 @@ impl App {
             || self.action_rx.is_some()
             || self.preview_rx.is_some()
             || self.cost_rx.is_some()
+            || self.sql_rx.is_some()
+            || self.run_rx.is_some()
     }
 
     pub fn tick_spinner(&mut self) {

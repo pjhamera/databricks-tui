@@ -13,13 +13,21 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Grep any pane with `/`: filter by name, detail text or status
   (`/running` shows only running things)
 - Drill into any item: formatted key facts and recent activity, raw JSON one key away
+- Debug job runs without the browser: drill from a job into any run to see
+  per-task states, durations and the actual error output of failed tasks;
+  live runs refresh themselves every few seconds
+- SQL console (`:`): type a statement, run it on a warehouse, page through
+  results — the whole lakehouse is queryable from the dashboard
+- Problems view (`!`): everything currently failing across all panes in
+  one list, with Enter jumping straight to the culprit
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
 - Warehouse details include recent query history: who ran what, how long
 - DBU usage view: 14 days of system.billing.usage as color-stacked daily
   bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT), with
-  list-price dollar estimates when system.billing.list_prices is readable
+  list-price dollar estimates when system.billing.list_prices is readable,
+  and a top-spenders table naming the jobs/clusters/warehouses behind the DBUs
 - Table lineage: upstream and downstream tables for any table/view, from
   system.access.table_lineage
 - Jump to any resource in the workspace web UI with one key
@@ -91,7 +99,10 @@ them can be slow on busy workspaces.
 | `Shift+Tab` / `←` / `h` | Focus previous panel |
 | `↓` / `j`, `↑` / `k` | Select item in focused panel |
 | `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
-| `Enter` | Open details for the selected item (drills down in Unity Catalog) |
+| `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
+| `h` / `l` (run view) | Older / newer run; failed tasks show their error output |
+| `:` | SQL console: run any statement on a warehouse and page through results |
+| `!` | Problems: everything failing across panes; `Enter` jumps to the item |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse) |
 | `L` | Lineage: upstream/downstream tables for the selected table/view |

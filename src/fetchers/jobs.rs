@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// Status of a single run, preferring the final result over the lifecycle state.
-fn run_status(r: &Value) -> Status {
+pub(crate) fn run_status(r: &Value) -> Status {
     r["state"]["result_state"]
         .as_str()
         .or_else(|| r["state"]["life_cycle_state"].as_str())

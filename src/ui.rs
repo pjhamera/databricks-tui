@@ -96,6 +96,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_header(f, root[0], app, &p);
     draw_footer(f, root[2], app, &p);
 
+    if app.sql.is_some() {
+        draw_sql(f, root[1], app, &p);
+        // Running a query may pop the warehouse picker over the console.
+        if app.wh_picker.is_some() {
+            draw_wh_picker(f, root[1], app, &p);
+        }
+        return;
+    }
+
     if app.cost.is_some() {
         draw_cost(f, root[1], app, &p);
         return;
@@ -103,6 +112,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.preview.is_some() {
         draw_preview(f, root[1], app, &p);
+        return;
+    }
+
+    if app.run_view.is_some() {
+        draw_run(f, root[1], app, &p);
         return;
     }
 
@@ -136,6 +150,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         if app.wh_picker.is_some() {
             draw_wh_picker(f, root[1], app, &p);
+        }
+        if app.problems.is_some() {
+            draw_problems(f, root[1], app, &p);
         }
         return;
     }
@@ -191,6 +208,83 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.wh_picker.is_some() {
         draw_wh_picker(f, root[1], app, &p);
     }
+    if app.problems.is_some() {
+        draw_problems(f, root[1], app, &p);
+    }
+}
+
+fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(pr) = &app.problems else {
+        return;
+    };
+    let name_w = pr
+        .items
+        .iter()
+        .map(|i| i.name.chars().count())
+        .max()
+        .unwrap_or(10)
+        .max(10);
+    let note_w = pr
+        .items
+        .iter()
+        .map(|i| i.note.chars().count())
+        .max()
+        .unwrap_or(0);
+    // dot(2) + name + gap(2) + icon+title(20) + note + padding/borders(8)
+    let width = ((name_w + note_w + 32) as u16).min(area.width.saturating_sub(4));
+    let height = (pr.items.len().max(1) as u16 + 4).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ⚠ ", Style::default().fg(p.err)),
+            Span::styled(
+                format!("Problems · {} ", pr.items.len()),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.err).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 1));
+
+    if pr.items.is_empty() {
+        let par = Paragraph::new("✓ all clear — nothing failing right now")
+            .style(Style::default().fg(p.ok))
+            .block(block);
+        f.render_widget(par, popup);
+        return;
+    }
+
+    let items: Vec<ListItem> = pr
+        .items
+        .iter()
+        .map(|problem| {
+            let panel = Panel::ALL[problem.panel];
+            ListItem::new(Line::from(vec![
+                Span::styled("✗ ", Style::default().fg(p.err)),
+                Span::styled(
+                    format!("{:<width$}", problem.name, width = name_w + 2),
+                    Style::default().fg(p.text),
+                ),
+                Span::styled(
+                    format!("{} {:<18}", panel.icon(), panel.title()),
+                    Style::default().fg(accent(panel, p)),
+                ),
+                Span::styled(problem.note.clone(), Style::default().fg(p.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(pr.index));
+    f.render_stateful_widget(list, popup, &mut state);
 }
 
 fn draw_wh_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -218,7 +312,7 @@ fn draw_wh_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         .title(Line::from(vec![
             Span::styled(" ▣ ", Style::default().fg(p.warehouses)),
             Span::styled(
-                "Run preview on ",
+                "Run query on ",
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
             ),
         ]))
@@ -506,8 +600,177 @@ fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 lines.push(Line::from(spans));
             }
 
+            if !data.spenders.is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    "TOP SPENDERS · 14 days",
+                    Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+                )));
+                let name_w = data
+                    .spenders
+                    .iter()
+                    .map(|s| {
+                        app.resource_name(&s.kind, &s.id)
+                            .unwrap_or_else(|| s.id.clone())
+                            .chars()
+                            .count()
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    .max(8);
+                for (i, s) in data.spenders.iter().enumerate() {
+                    let name = app
+                        .resource_name(&s.kind, &s.id)
+                        .unwrap_or_else(|| s.id.clone());
+                    let kind_color = match s.kind.as_str() {
+                        "job" => p.jobs,
+                        "cluster" => p.clusters,
+                        "warehouse" => p.warehouses,
+                        _ => p.dim,
+                    };
+                    let amount = if data.priced {
+                        format!("{:>8.1} DBU · ${:.2}", s.dbus, s.usd)
+                    } else {
+                        format!("{:>8.1} DBU", s.dbus)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{:>3}. ", i + 1), Style::default().fg(p.dim)),
+                        Span::styled(format!("{:<10}", s.kind), Style::default().fg(kind_color)),
+                        Span::styled(
+                            format!("{:<width$}", name, width = name_w + 2),
+                            Style::default().fg(p.text),
+                        ),
+                        Span::styled(amount, Style::default().fg(p.text)),
+                    ]));
+                }
+            }
+
             let par = Paragraph::new(lines).block(block);
             f.render_widget(par, area);
+        }
+    }
+}
+
+fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let console = app.sql.as_ref().unwrap();
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    let via = if console.warehouse.is_empty() {
+        String::new()
+    } else {
+        format!("via {} ", console.warehouse)
+    };
+    let prompt_block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ⌁ ", Style::default().fg(p.warehouses)),
+            Span::styled(
+                "SQL Console ",
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(via, Style::default().fg(p.dim)),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(
+            Style::default()
+                .fg(p.warehouses)
+                .add_modifier(Modifier::BOLD),
+        )
+        .padding(Padding::horizontal(1));
+    let prompt = Paragraph::new(Line::from(vec![
+        Span::styled("❯ ", Style::default().fg(p.key)),
+        Span::styled(console.input.as_str(), Style::default().fg(p.text)),
+        Span::styled("▏", Style::default().fg(p.warn)),
+    ]))
+    .block(prompt_block);
+    f.render_widget(prompt, parts[0]);
+
+    let row_info = match &console.data {
+        Some(Ok(t)) => format!("{} rows ", t.rows.len()),
+        _ => String::new(),
+    };
+    let results_block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" Results ", Style::default().fg(p.text)),
+            Span::styled(row_info, Style::default().fg(p.dim)),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.border))
+        .padding(Padding::horizontal(1));
+
+    if console.running {
+        let par = Paragraph::new(format!(
+            "{} running on {} — the warehouse may need a moment to start…",
+            app.spinner(),
+            console.warehouse
+        ))
+        .style(Style::default().fg(p.warn))
+        .block(results_block);
+        f.render_widget(par, parts[1]);
+        return;
+    }
+    match &console.data {
+        None => {
+            let par = Paragraph::new(
+                "type a statement and press enter — e.g. SELECT * FROM main.sales.orders LIMIT 50",
+            )
+            .style(Style::default().fg(p.dim))
+            .block(results_block);
+            f.render_widget(par, parts[1]);
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!("✗ {e}"))
+                .style(Style::default().fg(p.err))
+                .wrap(Wrap { trim: false })
+                .block(results_block);
+            f.render_widget(par, parts[1]);
+        }
+        Some(Ok(data)) if data.rows.is_empty() && data.headers.is_empty() => {
+            let par = Paragraph::new("✓ statement succeeded — no result set")
+                .style(Style::default().fg(p.ok))
+                .block(results_block);
+            f.render_widget(par, parts[1]);
+        }
+        Some(Ok(data)) => {
+            let header_cells: Vec<Cell> = data
+                .headers
+                .iter()
+                .map(|h| {
+                    Cell::from(h.as_str()).style(
+                        Style::default()
+                            .fg(p.warehouses)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                })
+                .collect();
+            let header = Row::new(header_cells);
+            let rows: Vec<Row> = data
+                .rows
+                .iter()
+                .skip(console.scroll)
+                .map(|r| {
+                    Row::new(
+                        r.iter()
+                            .map(|c| Cell::from(c.as_str()).style(Style::default().fg(p.text)))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let n = data.headers.len().max(1) as u16;
+            let widths: Vec<Constraint> = data
+                .headers
+                .iter()
+                .map(|_| Constraint::Ratio(1, n as u32))
+                .collect();
+            let table = Table::new(rows, widths)
+                .header(header)
+                .column_spacing(1)
+                .block(results_block);
+            f.render_widget(table, parts[1]);
         }
     }
 }
@@ -658,6 +921,92 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     f.render_widget(par, area);
 }
 
+fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let rv = app.run_view.as_ref().unwrap();
+    let acc = p.jobs;
+    let mut title_spans = vec![
+        Span::styled(" ⟳ ", Style::default().fg(acc)),
+        Span::styled(
+            format!("{} · run ", rv.job_name),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some((run_id, _, age)) = rv.runs.get(rv.idx) {
+        title_spans.push(Span::styled(
+            format!("{run_id} "),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ));
+        title_spans.push(Span::styled(
+            format!("· {} of {} · {} ", rv.idx + 1, rv.runs.len(), age),
+            Style::default().fg(p.dim),
+        ));
+    }
+    if rv.live {
+        title_spans.push(Span::styled(
+            format!("{} live ", app.spinner()),
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let block = Block::default()
+        .title(Line::from(title_spans))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
+        .padding(Padding::horizontal(1));
+
+    let Some(data) = &rv.data else {
+        let par = Paragraph::new(format!("{} Loading run…", app.spinner()))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+        f.render_widget(par, area);
+        return;
+    };
+
+    if rv.show_raw || data.summary.is_empty() {
+        let par = Paragraph::new(data.raw.as_str())
+            .style(Style::default().fg(p.text))
+            .wrap(Wrap { trim: false })
+            .scroll((rv.scroll, 0))
+            .block(block);
+        f.render_widget(par, area);
+        return;
+    }
+
+    let mut lines: Vec<Line> = data
+        .summary
+        .iter()
+        .map(|(k, v)| {
+            Line::from(vec![
+                Span::styled(format!("{:<16}", k), Style::default().fg(p.dim)),
+                Span::styled(v.as_str(), Style::default().fg(p.text)),
+            ])
+        })
+        .collect();
+    if !data.activity.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "Tasks",
+            Style::default().fg(acc).add_modifier(Modifier::BOLD),
+        )));
+        for (status, text) in &data.activity {
+            // Error continuation lines carry their own ↳ marker.
+            if text.starts_with("  ↳") {
+                lines.push(Line::from(Span::styled(
+                    text.as_str(),
+                    Style::default().fg(p.err),
+                )));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("● ", Style::default().fg(status_color(status, p))),
+                    Span::styled(text.as_str(), Style::default().fg(p.text)),
+                ]));
+            }
+        }
+    }
+    let par = Paragraph::new(lines).scroll((rv.scroll, 0)).block(block);
+    f.render_widget(par, area);
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -805,7 +1154,19 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let spans = if app.cost.is_some() {
+    let spans = if app.problems.is_some() {
+        vec![
+            dim(" "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" select   "),
+            key("enter"),
+            dim(" jump to item   "),
+            key("esc"),
+            dim(" close"),
+        ]
+    } else if app.cost.is_some() {
         vec![
             dim(" "),
             key("esc"),
@@ -824,6 +1185,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" run preview   "),
             key("esc"),
             dim(" cancel"),
+        ]
+    } else if app.sql.is_some() {
+        vec![
+            dim(" "),
+            key("enter"),
+            dim(" run   "),
+            key("↑"),
+            dim("/"),
+            key("↓"),
+            dim(" scroll rows   "),
+            key("esc"),
+            dim(" close"),
         ]
     } else if app.preview.is_some() {
         vec![
@@ -849,11 +1222,35 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("esc"),
             dim(" cancel"),
         ]
-    } else if app.detail.is_some() {
+    } else if app.run_view.is_some() {
         vec![
             dim(" "),
             key("esc"),
             dim(" back   "),
+            key("h"),
+            dim("/"),
+            key("l"),
+            dim(" older/newer run   "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" scroll   "),
+            key("J"),
+            dim(" raw   "),
+            key("q"),
+            dim(" quit"),
+        ]
+    } else if app.detail.is_some() {
+        let mut spans = vec![dim(" "), key("esc"), dim(" back   ")];
+        if app
+            .detail
+            .as_ref()
+            .is_some_and(|d| d.panel == Panel::Jobs && d.section != "Lineage")
+        {
+            spans.push(key("enter"));
+            spans.push(dim(" latest run   "));
+        }
+        spans.extend([
             key("j"),
             dim("/"),
             key("k"),
@@ -864,7 +1261,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" open   "),
             key("q"),
             dim(" quit"),
-        ]
+        ]);
+        spans
     } else {
         let mut spans = vec![
             dim(" "),
@@ -916,6 +1314,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" access   "),
             key("$"),
             dim(" cost   "),
+            key("!"),
+            dim(" problems   "),
+            key(":"),
+            dim(" sql   "),
             key("o"),
             dim(" open   "),
             key("z"),

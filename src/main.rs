@@ -169,6 +169,12 @@ async fn run(
         if app.poll_cost() {
             needs_redraw = true;
         }
+        if app.poll_sql() {
+            needs_redraw = true;
+        }
+        if app.poll_run(&cli) {
+            needs_redraw = true;
+        }
 
         // Splash: animate fast, expire on its deadline.
         if let Some(t) = app.splash_until {
@@ -252,6 +258,29 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.problems.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        (KeyCode::Esc, _) | (KeyCode::Char('!'), _) => {
+                            app.problems = None;
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            app.problems_next();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            app.problems_prev();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Enter, _) => {
+                            app.problems_jump();
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
                 } else if app.wh_picker.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -275,6 +304,19 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.sql.is_some() {
+                    // Printable keys type into the prompt.
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) => app.close_sql(),
+                        (KeyCode::Enter, _) => app.sql_run(&cli),
+                        (KeyCode::Backspace, _) => app.sql_pop(),
+                        (KeyCode::Up, _) => app.sql_scroll(-1),
+                        (KeyCode::Down, _) => app.sql_scroll(1),
+                        (KeyCode::Char(ch), _) => app.sql_push(ch),
+                        _ => {}
+                    }
+                    needs_redraw = true;
                 } else if app.cost.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -305,6 +347,37 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.run_view.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        (KeyCode::Esc, _) => {
+                            app.close_run();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            app.run_scroll(1);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            app.run_scroll(-1);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Left, _) | (KeyCode::Char('h'), _) => {
+                            app.run_nav(&cli, 1);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Right, _) | (KeyCode::Char('l'), _) => {
+                            app.run_nav(&cli, -1);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('J'), _) => {
+                            app.run_toggle_raw();
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
                 } else if app.detail.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -312,6 +385,10 @@ async fn run(
                         }
                         (KeyCode::Esc, _) => {
                             app.close_detail();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Enter, _) => {
+                            app.open_run(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
@@ -349,6 +426,14 @@ async fn run(
                         }
                         (KeyCode::Char('/'), _) => {
                             app.filter_start();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('!'), _) => {
+                            app.open_problems();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char(':'), _) => {
+                            app.open_sql();
                             needs_redraw = true;
                         }
                         (KeyCode::Esc, _) if !app.active_filter().is_empty() => {

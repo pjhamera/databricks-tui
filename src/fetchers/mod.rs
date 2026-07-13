@@ -9,4 +9,5 @@ pub mod jobs;
 pub mod lineage;
 pub mod pipelines;
 pub mod preview;
+pub mod runs;
 pub mod warehouses;
