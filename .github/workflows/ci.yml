@@ -57,3 +57,61 @@ jobs:
           files: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.tar.gz.sha256
+
+  # Bumps the Homebrew formula in pjhamera/homebrew-tap to this release.
+  tap:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download ${{ github.ref_name }} --repo ${{ github.repository }} --pattern '*.sha256'
+      - name: Update formula
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM=$(cut -d' ' -f1 databricks-tui-macos-arm64.tar.gz.sha256)
+          X86=$(cut -d' ' -f1 databricks-tui-macos-x86_64.tar.gz.sha256)
+          LINUX=$(cut -d' ' -f1 databricks-tui-linux-x86_64.tar.gz.sha256)
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/pjhamera/homebrew-tap.git"
+          cat > homebrew-tap/Formula/databricks-tui.rb <<EOF
+          class DatabricksTui < Formula
+            desc "Terminal dashboard for Databricks"
+            homepage "https://github.com/pjhamera/databricks-tui"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/pjhamera/databricks-tui/releases/download/v#{version}/databricks-tui-macos-arm64.tar.gz"
+                sha256 "${ARM}"
+              else
+                url "https://github.com/pjhamera/databricks-tui/releases/download/v#{version}/databricks-tui-macos-x86_64.tar.gz"
+                sha256 "${X86}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/pjhamera/databricks-tui/releases/download/v#{version}/databricks-tui-linux-x86_64.tar.gz"
+              sha256 "${LINUX}"
+            end
+
+            def install
+              bin.install "databricks-tui"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/databricks-tui --version")
+            end
+          end
+          EOF
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/databricks-tui.rb
+          git commit -m "databricks-tui ${VERSION}"
+          git push
