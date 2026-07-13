@@ -71,6 +71,6 @@ pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
             items
         }
     };
-    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    items.sort_by_key(|i| i.name.to_lowercase());
     Ok(Shape::List(items))
 }
