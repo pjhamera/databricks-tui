@@ -666,30 +666,49 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let brand_style = if app.loading {
-        // Pulse the brick mark while data is on its way.
-        Style::default()
-            .fg(p.brand)
-            .add_modifier(if app.spinner_frame().is_multiple_of(2) {
-                Modifier::BOLD
-            } else {
-                Modifier::DIM
-            })
-    } else {
-        Style::default().fg(p.brand)
+    // Brand block: a two-tone brick mark, then DATABRICKS in a red→orange
+    // gradient with a bright shimmer sweeping across it while data loads,
+    // then LAKEHOUSE letter-spaced in the accent color.
+    let (from, to) = match app.theme {
+        ThemeMode::Dark => ((255u8, 54u8, 33u8), (255u8, 160u8, 70u8)),
+        ThemeMode::Light => ((185u8, 28u8, 28u8), (194u8, 65u8, 12u8)),
+    };
+    let grad = |t: f32| {
+        Color::Rgb(
+            (from.0 as f32 + (to.0 as f32 - from.0 as f32) * t) as u8,
+            (from.1 as f32 + (to.1 as f32 - from.1 as f32) * t) as u8,
+            (from.2 as f32 + (to.2 as f32 - from.2 as f32) * t) as u8,
+        )
     };
     let mut left = vec![
-        Span::styled(" ◢◤ ", brand_style),
         Span::styled(
-            "Databricks",
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            " ◢",
+            Style::default().fg(grad(0.0)).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" Lakehouse", Style::default().fg(p.key)),
         Span::styled(
-            format!(" · v{}", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(p.dim),
+            "◤ ",
+            Style::default().fg(grad(0.6)).add_modifier(Modifier::BOLD),
         ),
     ];
+    let word: Vec<char> = "DATABRICKS".chars().collect();
+    let sweep = (app.spinner_frame() * 2) % (word.len() + 8);
+    for (i, ch) in word.iter().enumerate() {
+        let t = i as f32 / (word.len() - 1) as f32;
+        let style = if app.loading && (i as i32 - sweep as i32).unsigned_abs() <= 1 {
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(grad(t)).add_modifier(Modifier::BOLD)
+        };
+        left.push(Span::styled(ch.to_string(), style));
+    }
+    left.push(Span::raw(" "));
+    for ch in "LAKEHOUSE".chars() {
+        left.push(Span::styled(format!("{ch} "), Style::default().fg(p.key)));
+    }
+    left.push(Span::styled(
+        format!("· v{}", env!("CARGO_PKG_VERSION")),
+        Style::default().fg(p.dim),
+    ));
     if let Some(profile) = &app.profile {
         left.push(Span::styled("  ·  ", Style::default().fg(p.dim)));
         left.push(Span::styled("⌂ ", Style::default().fg(p.dim)));
