@@ -77,10 +77,10 @@ mv databricks-tui /usr/local/bin/
 Artifacts: `databricks-tui-macos-arm64`, `databricks-tui-macos-x86_64`,
 `databricks-tui-linux-x86_64` — each with a `.sha256` checksum.
 
-Or build from source:
+Or with cargo:
 
 ```bash
-cargo install --path .
+cargo install databricks-tui
 ```
 
 ## Upgrade
