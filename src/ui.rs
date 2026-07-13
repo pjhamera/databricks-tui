@@ -217,13 +217,23 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let Some(pr) = &app.problems else {
         return;
     };
+    let truncate = |s: &str, max: usize| -> String {
+        if s.chars().count() <= max {
+            s.to_string()
+        } else {
+            let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+            format!("{cut}…")
+        }
+    };
+    // Names get a bounded column; notes (which can be whole CLI error
+    // lines) take whatever room is left and are truncated to fit.
     let name_w = pr
         .items
         .iter()
         .map(|i| i.name.chars().count())
         .max()
         .unwrap_or(10)
-        .max(10);
+        .clamp(10, 40);
     let note_w = pr
         .items
         .iter()
@@ -233,6 +243,8 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     // dot(2) + name + gap(2) + icon+title(20) + note + padding/borders(8)
     let width = ((name_w + note_w + 32) as u16).min(area.width.saturating_sub(4));
     let height = (pr.items.len().max(1) as u16 + 4).min(area.height);
+    // Room left for the note on each row inside borders and padding.
+    let note_space = (width as usize).saturating_sub(name_w + 30);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -242,7 +254,7 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     f.render_widget(Clear, popup);
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(" ⚠ ", Style::default().fg(p.err)),
+            Span::styled(" ✗ ", Style::default().fg(p.err)),
             Span::styled(
                 format!("Problems · {} ", pr.items.len()),
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
@@ -269,14 +281,21 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             ListItem::new(Line::from(vec![
                 Span::styled("✗ ", Style::default().fg(p.err)),
                 Span::styled(
-                    format!("{:<width$}", problem.name, width = name_w + 2),
+                    format!(
+                        "{:<width$}",
+                        truncate(&problem.name, name_w),
+                        width = name_w + 2
+                    ),
                     Style::default().fg(p.text),
                 ),
                 Span::styled(
                     format!("{} {:<18}", panel.icon(), panel.title()),
                     Style::default().fg(accent(panel, p)),
                 ),
-                Span::styled(problem.note.clone(), Style::default().fg(p.dim)),
+                Span::styled(
+                    truncate(&problem.note, note_space),
+                    Style::default().fg(p.dim),
+                ),
             ]))
         })
         .collect();
