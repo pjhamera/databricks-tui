@@ -173,6 +173,7 @@ fn edit_sql_in_editor(
     };
     let path = std::env::temp_dir().join(format!("databricks-tui-{}.sql", std::process::id()));
     std::fs::write(&path, &current)?;
+    databricks_tui::config::restrict(&path, 0o600);
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());

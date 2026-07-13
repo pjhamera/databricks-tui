@@ -199,6 +199,7 @@ fn save_history(history: &[String]) {
     };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
+        crate::config::restrict(dir, 0o700);
     }
     // Keep the tail; nobody scrolls back 200 queries.
     let tail: Vec<&str> = history
@@ -208,7 +209,9 @@ fn save_history(history: &[String]) {
         .rev()
         .map(String::as_str)
         .collect();
-    let _ = std::fs::write(path, tail.join("\n") + "\n");
+    // Queries can hold sensitive literals — owner-only, like shell history.
+    let _ = std::fs::write(&path, tail.join("\n") + "\n");
+    crate::config::restrict(&path, 0o600);
 }
 
 /// Byte offset of the `cursor`th character in `input`.

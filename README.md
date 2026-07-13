@@ -2,6 +2,12 @@
 
 Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL warehouses, dashboards, and Unity Catalog in one view.
 
+![demo](docs/demo.gif)
+
+> Community project — not affiliated with, endorsed by, or supported by
+> Databricks, Inc. It drives the official [Databricks CLI](https://docs.databricks.com/dev-tools/cli/)
+> with your own credentials; nothing is sent anywhere except your workspace.
+
 - Animated splash screen and a Databricks-branded look: product-named panes
   (Compute, Lakeflow, SQL Warehouses, AI/BI Dashboards), status chips, and
   refresh flashes when new data lands

@@ -37,9 +37,22 @@ impl Config {
         };
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
+            restrict(dir, 0o700);
         }
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(p, json);
+            let _ = std::fs::write(&p, json);
+            restrict(&p, 0o600);
         }
     }
+}
+
+/// Owner-only permissions on files the app writes (no-op off Unix).
+pub fn restrict(path: &std::path::Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
 }

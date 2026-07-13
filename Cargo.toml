@@ -2,9 +2,13 @@
 name = "databricks-tui"
 version = "0.17.0"
 edition = "2021"
-description = "Terminal dashboard for Databricks"
+description = "Terminal dashboard for Databricks: compute, jobs, pipelines, warehouses, Unity Catalog, SQL console, costs and lineage"
 license = "MIT"
 repository = "https://github.com/pjhamera/databricks-tui"
+readme = "README.md"
+keywords = ["databricks", "tui", "terminal", "dashboard", "lakehouse"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["docs/", ".github/", "demo/"]
 
 [[bin]]
 name = "databricks-tui"
