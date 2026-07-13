@@ -53,12 +53,12 @@ impl Panel {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            Panel::Clusters => "◆",
-            Panel::Jobs => "◈",
-            Panel::Pipelines => "⇶",
-            Panel::Warehouses => "▣",
-            Panel::Dashboards => "▤",
-            Panel::Catalog => "◫",
+            Panel::Clusters => "⌬",
+            Panel::Jobs => "⟳",
+            Panel::Pipelines => "⋙",
+            Panel::Warehouses => "⌁",
+            Panel::Dashboards => "▦",
+            Panel::Catalog => "⧉",
         }
     }
 
