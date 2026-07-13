@@ -37,9 +37,20 @@ pub struct CostData {
     pub priced: bool,
     /// Top resources by DBU over the window, largest first.
     pub spenders: Vec<Spender>,
+    /// True when usage is filtered to the current workspace; false
+    /// means the whole account is shown (workspace id unresolved).
+    pub scoped: bool,
 }
 
-fn priced_query() -> String {
+/// `AND u.workspace_id = '<id>'` when the current workspace is known.
+fn ws_clause(workspace_id: Option<&str>) -> String {
+    match workspace_id {
+        Some(id) => format!(" AND u.workspace_id = '{}'", id.replace('\'', "")),
+        None => String::new(),
+    }
+}
+
+fn priced_query(ws: &str) -> String {
     format!(
         "SELECT u.usage_date, {BUCKET_CASE} AS bucket, \
          ROUND(SUM(u.usage_quantity), 2) AS dbus, \
@@ -49,7 +60,7 @@ fn priced_query() -> String {
            ON u.sku_name = lp.sku_name AND u.usage_unit = lp.usage_unit \
            AND u.usage_end_time >= lp.price_start_time \
            AND (lp.price_end_time IS NULL OR u.usage_end_time < lp.price_end_time) \
-         WHERE u.usage_date >= date_sub(current_date(), 13) \
+         WHERE u.usage_date >= date_sub(current_date(), 13){ws} \
          GROUP BY 1, 2 ORDER BY 1"
     )
 }
@@ -63,7 +74,7 @@ const SPENDER_KIND: &str = "CASE \
 const SPENDER_ID: &str = "COALESCE(u.usage_metadata.job_id, \
     u.usage_metadata.warehouse_id, u.usage_metadata.cluster_id, u.sku_name)";
 
-fn spenders_query(priced: bool) -> String {
+fn spenders_query(priced: bool, ws: &str) -> String {
     let usd = if priced {
         ", ROUND(SUM(u.usage_quantity * COALESCE(lp.pricing.default, 0)), 2) AS usd"
     } else {
@@ -81,7 +92,7 @@ fn spenders_query(priced: bool) -> String {
         "SELECT {SPENDER_KIND} AS kind, {SPENDER_ID} AS id, \
          ROUND(SUM(u.usage_quantity), 2) AS dbus{usd} \
          FROM system.billing.usage u {join}\
-         WHERE u.usage_date >= date_sub(current_date(), 13) \
+         WHERE u.usage_date >= date_sub(current_date(), 13){ws} \
          GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10"
     )
 }
@@ -106,12 +117,12 @@ fn parse_spenders(table: &TableData) -> Vec<Spender> {
         .collect()
 }
 
-fn plain_query() -> String {
+fn plain_query(ws: &str) -> String {
     format!(
         "SELECT u.usage_date, {BUCKET_CASE} AS bucket, \
          ROUND(SUM(u.usage_quantity), 2) AS dbus \
          FROM system.billing.usage u \
-         WHERE u.usage_date >= date_sub(current_date(), 13) \
+         WHERE u.usage_date >= date_sub(current_date(), 13){ws} \
          GROUP BY 1, 2 ORDER BY 1"
     )
 }
@@ -156,23 +167,57 @@ fn aggregate(table: &TableData, priced: bool) -> CostData {
         total_usd,
         priced,
         spenders: Vec::new(),
+        scoped: false,
+    }
+}
+
+/// Resolves the numeric id of the workspace behind `host` by matching
+/// its URL in system.access.workspaces_latest. None when the table is
+/// unreadable or the match is not unique.
+pub async fn resolve_workspace_id(
+    cli: &DatabricksCli,
+    warehouse_id: &str,
+    host: &str,
+) -> Option<String> {
+    let hostname = host
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .replace('\'', "");
+    let sql = format!(
+        "SELECT CAST(workspace_id AS STRING) \
+         FROM system.access.workspaces_latest \
+         WHERE workspace_url LIKE '%{hostname}%' LIMIT 2"
+    );
+    let table = run_sql(cli, &sql, warehouse_id).await.ok()?;
+    match table.rows.as_slice() {
+        [row] => row.first().cloned(),
+        _ => None,
     }
 }
 
 /// Daily DBU usage (and list-price dollar estimates when readable) for
 /// the last 14 days from system.billing tables, plus the top resources
-/// by DBU so spikes can be traced to a job/cluster/warehouse.
-pub async fn fetch(cli: &DatabricksCli, warehouse_id: &str) -> Result<CostData, String> {
-    let mut data = match run_sql(cli, &priced_query(), warehouse_id).await {
+/// by DBU so spikes can be traced to a job/cluster/warehouse. With a
+/// workspace id, usage is scoped to that workspace instead of the
+/// whole account.
+pub async fn fetch(
+    cli: &DatabricksCli,
+    warehouse_id: &str,
+    workspace_id: Option<&str>,
+) -> Result<CostData, String> {
+    let ws = ws_clause(workspace_id);
+    let mut data = match run_sql(cli, &priced_query(&ws), warehouse_id).await {
         Ok(table) => aggregate(&table, true),
         // list_prices may be unreadable — fall back to DBUs only.
         Err(_) => {
-            let table = run_sql(cli, &plain_query(), warehouse_id).await?;
+            let table = run_sql(cli, &plain_query(&ws), warehouse_id).await?;
             aggregate(&table, false)
         }
     };
+    data.scoped = workspace_id.is_some();
     // Spenders are a bonus — a failure here shouldn't sink the whole view.
-    if let Ok(table) = run_sql(cli, &spenders_query(data.priced), warehouse_id).await {
+    if let Ok(table) = run_sql(cli, &spenders_query(data.priced, &ws), warehouse_id).await {
         data.spenders = parse_spenders(&table);
     }
     Ok(data)

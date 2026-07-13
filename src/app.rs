@@ -243,7 +243,11 @@ pub struct App {
     /// Session-remembered (id, name) of the warehouse used for previews.
     pub preview_warehouse: Option<(String, String)>,
     pub cost: Option<CostView>,
-    cost_rx: Option<oneshot::Receiver<Result<fetchers::cost::CostData, String>>>,
+    #[allow(clippy::type_complexity)]
+    cost_rx: Option<oneshot::Receiver<(Result<fetchers::cost::CostData, String>, Option<String>)>>,
+    /// Numeric id of the current workspace, resolved lazily for cost
+    /// scoping and cached for the session.
+    workspace_id: Option<String>,
     pub sql: Option<SqlConsole>,
     sql_rx: Option<oneshot::Receiver<Result<crate::shape::TableData, String>>>,
     pub run_view: Option<RunView>,
@@ -295,6 +299,7 @@ impl App {
             preview_warehouse: None,
             cost: None,
             cost_rx: None,
+            workspace_id: None,
             sql: None,
             sql_rx: None,
             run_view: None,
@@ -382,6 +387,7 @@ impl App {
         self.preview_warehouse = None;
         self.cost = None;
         self.cost_rx = None;
+        self.workspace_id = None;
         self.sql = None;
         self.sql_rx = None;
         self.run_view = None;
@@ -774,9 +780,17 @@ impl App {
         let (tx, rx) = oneshot::channel();
         self.cost_rx = Some(rx);
         let cli = Arc::clone(cli);
+        let host = self.host.clone();
+        let cached_ws = self.workspace_id.clone();
         tokio::spawn(async move {
-            let result = fetchers::cost::fetch(&cli, &id).await;
-            let _ = tx.send(result);
+            // Scope usage to this workspace; resolved once, then cached.
+            let ws = match (cached_ws, host) {
+                (Some(w), _) => Some(w),
+                (None, Some(h)) => fetchers::cost::resolve_workspace_id(&cli, &id, &h).await,
+                (None, None) => None,
+            };
+            let result = fetchers::cost::fetch(&cli, &id, ws.as_deref()).await;
+            let _ = tx.send((result, ws));
         });
     }
 
@@ -1001,9 +1015,12 @@ impl App {
             return false;
         };
         match rx.try_recv() {
-            Ok(result) => {
+            Ok((result, ws)) => {
                 if result.is_err() {
                     self.preview_warehouse = None;
+                }
+                if ws.is_some() {
+                    self.workspace_id = ws;
                 }
                 if let Some(cv) = &mut self.cost {
                     cv.data = Some(result);

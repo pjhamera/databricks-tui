@@ -26,7 +26,8 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
 - Warehouse details include recent query history: who ran what, how long
-- DBU usage view: 14 days of system.billing.usage as color-stacked daily
+- DBU usage view scoped to the current workspace: 14 days of
+  system.billing.usage as color-stacked daily
   bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT), with
   list-price dollar estimates when system.billing.list_prices is readable,
   and a top-spenders table naming the jobs/clusters/warehouses behind the DBUs

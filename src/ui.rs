@@ -626,10 +626,15 @@ fn bucket_color(bucket: &str, p: &Palette) -> Color {
 
 fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let cv = app.cost.as_ref().unwrap();
+    let scope = match &cv.data {
+        Some(Ok(d)) if d.scoped => " · this workspace",
+        Some(Ok(_)) => " · all workspaces",
+        _ => "",
+    };
     let title = Line::from(vec![
         Span::styled(" ◢◤ ", Style::default().fg(p.brand)),
         Span::styled(
-            "Usage · last 14 days ",
+            format!("Usage · last 14 days{scope} "),
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("via {} ", cv.warehouse), Style::default().fg(p.dim)),
@@ -698,6 +703,12 @@ fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 lines.push(Line::from(Span::styled(
                     " list prices before discounts",
                     Style::default().fg(p.dim),
+                )));
+            }
+            if !data.scoped {
+                lines.push(Line::from(Span::styled(
+                    " couldn't resolve this workspace's id — showing the whole account",
+                    Style::default().fg(p.warn),
                 )));
             }
             lines.push(Line::default());
