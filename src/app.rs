@@ -152,6 +152,47 @@ pub struct SqlConsole {
     pub scroll: usize,
 }
 
+/// Where console history lives; one statement per line, oldest first.
+fn history_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".config")
+            .join("databricks-tui")
+            .join("history"),
+    )
+}
+
+fn load_history() -> Vec<String> {
+    history_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_history(history: &[String]) {
+    let Some(path) = history_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Keep the tail; nobody scrolls back 200 queries.
+    let tail: Vec<&str> = history
+        .iter()
+        .rev()
+        .take(200)
+        .rev()
+        .map(String::as_str)
+        .collect();
+    let _ = std::fs::write(path, tail.join("\n") + "\n");
+}
+
 /// Byte offset of the `cursor`th character in `input`.
 fn byte_at(input: &str, cursor: usize) -> usize {
     input
@@ -173,9 +214,14 @@ pub struct CostView {
     pub data: Option<Result<fetchers::cost::CostData, String>>,
 }
 
-/// Drill-down into a single job run, layered over the job detail view.
+/// Drill-down into a single job run or pipeline update, layered over
+/// the owning detail view.
 pub struct RunView {
-    pub job_name: String,
+    /// Panel::Jobs (runs) or Panel::Pipelines (updates).
+    pub panel: Panel,
+    pub owner_name: String,
+    /// Job id or pipeline id the runs belong to.
+    owner_id: String,
     /// Recent runs newest-first: (run_id, status, age).
     pub runs: Vec<(String, Status, String)>,
     /// Which of `runs` is shown.
@@ -261,6 +307,12 @@ pub struct App {
     workspace_id: Option<String>,
     pub sql: Option<SqlConsole>,
     sql_rx: Option<oneshot::Receiver<Result<crate::shape::TableData, String>>>,
+    /// Past console statements, oldest first; persisted across sessions.
+    sql_history: Vec<String>,
+    /// Position while cycling history with ↑/↓; None = editing a new line.
+    hist_idx: Option<usize>,
+    /// The unfinished statement stashed when history browsing starts.
+    hist_draft: String,
     pub run_view: Option<RunView>,
     run_rx: Option<oneshot::Receiver<RunUpdate>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
@@ -313,6 +365,9 @@ impl App {
             workspace_id: None,
             sql: None,
             sql_rx: None,
+            sql_history: load_history(),
+            hist_idx: None,
+            hist_draft: String::new(),
             run_view: None,
             run_rx: None,
             pending: None,
@@ -908,6 +963,8 @@ impl App {
     pub fn close_sql(&mut self) {
         self.sql = None;
         self.sql_rx = None;
+        self.hist_idx = None;
+        self.hist_draft.clear();
     }
 
     pub fn sql_push(&mut self, c: char) {
@@ -951,6 +1008,44 @@ impl App {
         }
     }
 
+    /// ↑ at the prompt: step back through history, stashing the draft.
+    pub fn sql_hist_prev(&mut self) {
+        let Some(console) = &mut self.sql else {
+            return;
+        };
+        if self.sql_history.is_empty() {
+            return;
+        }
+        let idx = match self.hist_idx {
+            None => {
+                self.hist_draft = console.input.clone();
+                self.sql_history.len() - 1
+            }
+            Some(i) => i.saturating_sub(1),
+        };
+        self.hist_idx = Some(idx);
+        console.input = self.sql_history[idx].clone();
+        console.cursor = console.input.chars().count();
+    }
+
+    /// ↓ at the prompt: step forward, back to the stashed draft at the end.
+    pub fn sql_hist_next(&mut self) {
+        let Some(console) = &mut self.sql else {
+            return;
+        };
+        let Some(idx) = self.hist_idx else {
+            return;
+        };
+        if idx + 1 < self.sql_history.len() {
+            self.hist_idx = Some(idx + 1);
+            console.input = self.sql_history[idx + 1].clone();
+        } else {
+            self.hist_idx = None;
+            console.input = self.hist_draft.clone();
+        }
+        console.cursor = console.input.chars().count();
+    }
+
     pub fn sql_home(&mut self) {
         if let Some(console) = &mut self.sql {
             console.cursor = 0;
@@ -989,6 +1084,14 @@ impl App {
         if query.is_empty() {
             return;
         }
+        // Remember the statement (skipping immediate repeats) and reset
+        // any in-progress history browsing.
+        if self.sql_history.last() != Some(&query) {
+            self.sql_history.push(query.clone());
+            save_history(&self.sql_history);
+        }
+        self.hist_idx = None;
+        self.hist_draft.clear();
         let warehouses = self.warehouses();
         if warehouses.is_empty() {
             self.flash = Some(("✗ no SQL warehouse available".to_string(), Instant::now()));
@@ -1033,6 +1136,60 @@ impl App {
             let result = fetchers::preview::run_sql(&cli, &query, &id).await;
             let _ = tx.send(result);
         });
+    }
+
+    /// Writes a result set to a timestamped CSV in the working directory
+    /// and flashes the path.
+    fn export_csv(&mut self, label: &str, data: &crate::shape::TableData) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let slug: String = label
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .chars()
+            .take(40)
+            .collect();
+        let name = format!("databricks-{slug}-{stamp}.csv");
+        let msg = match std::fs::write(&name, data.to_csv()) {
+            Ok(()) => {
+                let cwd = std::env::current_dir()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default();
+                format!("✓ exported {} rows to {cwd}/{name}", data.rows.len())
+            }
+            Err(e) => format!("✗ export failed: {e}"),
+        };
+        self.flash = Some((msg, Instant::now()));
+    }
+
+    /// Ctrl+S in the console: export the current results.
+    pub fn sql_export(&mut self) {
+        if let Some(SqlConsole {
+            data: Some(Ok(data)),
+            last_sql,
+            ..
+        }) = &self.sql
+        {
+            let (label, data) = (last_sql.clone(), data.clone());
+            self.export_csv(&label, &data);
+        }
+    }
+
+    /// `e` in a table preview: export the sampled rows.
+    pub fn preview_export(&mut self) {
+        if let Some(Preview {
+            data: Some(Ok(data)),
+            name,
+            ..
+        }) = &self.preview
+        {
+            let (label, data) = (name.clone(), data.clone());
+            self.export_csv(&label, &data);
+        }
     }
 
     pub fn poll_sql(&mut self) -> bool {
@@ -1256,17 +1413,21 @@ impl App {
         });
     }
 
-    /// Drills from an open job detail into its most recent run.
+    /// Drills from an open job or pipeline detail into its most recent
+    /// run/update.
     pub fn open_run(&mut self, cli: &Arc<DatabricksCli>) {
         let Some(d) = &self.detail else {
             return;
         };
-        if d.panel != Panel::Jobs || d.section == "Lineage" {
+        let panel = d.panel;
+        if !matches!(panel, Panel::Jobs | Panel::Pipelines) || d.section == "Lineage" {
             return;
         }
-        let job_id = d.id.clone();
+        let owner_id = d.id.clone();
         self.run_view = Some(RunView {
-            job_name: d.name.clone(),
+            panel,
+            owner_name: d.name.clone(),
+            owner_id: owner_id.clone(),
             runs: Vec::new(),
             idx: 0,
             data: None,
@@ -1280,11 +1441,19 @@ impl App {
         let cli = Arc::clone(cli);
         tokio::spawn(async move {
             let result = async {
-                let runs = fetchers::runs::list(&cli, &job_id).await?;
-                let Some((run_id, _, _)) = runs.first().cloned() else {
-                    return Err("this job has no runs yet".to_string());
+                let runs = if panel == Panel::Jobs {
+                    fetchers::runs::list(&cli, &owner_id).await?
+                } else {
+                    fetchers::updates::list(&cli, &owner_id).await?
                 };
-                let (data, live) = fetchers::runs::fetch(&cli, &run_id).await;
+                let Some((run_id, _, _)) = runs.first().cloned() else {
+                    return Err("no runs recorded yet".to_string());
+                };
+                let (data, live) = if panel == Panel::Jobs {
+                    fetchers::runs::fetch(&cli, &run_id).await
+                } else {
+                    fetchers::updates::fetch(&cli, &owner_id, &run_id).await
+                };
                 Ok((runs, data, live))
             }
             .await;
@@ -1325,11 +1494,19 @@ impl App {
     }
 
     fn start_run_fetch(&mut self, cli: &Arc<DatabricksCli>, run_id: String) {
+        let Some(rv) = &self.run_view else {
+            return;
+        };
+        let (panel, owner_id) = (rv.panel, rv.owner_id.clone());
         let (tx, rx) = oneshot::channel();
         self.run_rx = Some(rx);
         let cli = Arc::clone(cli);
         tokio::spawn(async move {
-            let (data, live) = fetchers::runs::fetch(&cli, &run_id).await;
+            let (data, live) = if panel == Panel::Jobs {
+                fetchers::runs::fetch(&cli, &run_id).await
+            } else {
+                fetchers::updates::fetch(&cli, &owner_id, &run_id).await
+            };
             let _ = tx.send(RunUpdate::Detail(data, live));
         });
     }

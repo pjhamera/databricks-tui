@@ -322,6 +322,7 @@ async fn run(
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                         (KeyCode::Char('a'), KeyModifiers::CONTROL) => app.sql_home(),
                         (KeyCode::Char('e'), KeyModifiers::CONTROL) => app.sql_end(),
+                        (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.sql_export(),
                         (KeyCode::Esc, _) => app.close_sql(),
                         (KeyCode::Enter, _) => app.sql_run(&cli),
                         (KeyCode::Backspace, _) => app.sql_pop(),
@@ -330,8 +331,10 @@ async fn run(
                         (KeyCode::Right, _) => app.sql_right(),
                         (KeyCode::Home, _) => app.sql_home(),
                         (KeyCode::End, _) => app.sql_end(),
-                        (KeyCode::Up, _) => app.sql_scroll(-1),
-                        (KeyCode::Down, _) => app.sql_scroll(1),
+                        (KeyCode::Up, _) => app.sql_hist_prev(),
+                        (KeyCode::Down, _) => app.sql_hist_next(),
+                        (KeyCode::PageUp, _) => app.sql_scroll(-5),
+                        (KeyCode::PageDown, _) => app.sql_scroll(5),
                         (KeyCode::Char(ch), _) => app.sql_push(ch),
                         _ => {}
                     }
@@ -354,6 +357,10 @@ async fn run(
                         }
                         (KeyCode::Esc, _) => {
                             app.close_preview();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('e'), _) => {
+                            app.preview_export();
                             needs_redraw = true;
                         }
                         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {

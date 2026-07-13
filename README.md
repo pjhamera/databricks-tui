@@ -13,13 +13,16 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Grep any pane with `/`: filter by name, detail text or status
   (`/running` shows only running things)
 - Drill into any item: formatted key facts and recent activity, raw JSON one key away
-- Debug job runs without the browser: drill from a job into any run to see
-  per-task states, durations and the actual error output of failed tasks;
-  live runs refresh themselves every few seconds
+- Debug Lakeflow without the browser: drill from a job into any run
+  (per-task states, durations, the actual error output of failed tasks)
+  or from a pipeline into any update (state, cause, event-log entries
+  with failures highlighted); live runs refresh themselves every few seconds
 - SQL console (`:`): type a statement, run it on a warehouse, page through
   results — the whole lakehouse is queryable from the dashboard; with a
   table/view selected in the catalog pane, the prompt opens pre-filled with
-  `SELECT * FROM catalog.schema.table LIMIT 100`, ready to edit
+  `SELECT * FROM catalog.schema.table LIMIT 100`, ready to edit; ↑/↓ cycle
+  through past statements (persisted in ~/.config/databricks-tui/history),
+  and Ctrl+S exports results to CSV — previews export with `e`
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
@@ -80,8 +83,8 @@ databricks-tui uninstall          # asks for confirmation
 databricks-tui uninstall --yes    # no prompt
 ```
 
-Removes the binary from wherever it is installed. The app keeps no other
-files on your system.
+Removes the binary from wherever it is installed. The only other file the
+app keeps is the SQL console history at `~/.config/databricks-tui/history`.
 
 ## Usage
 
@@ -106,11 +109,11 @@ them can be slow on busy workspaces.
 | `↓` / `j`, `↑` / `k` | Select item in focused panel |
 | `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
-| `h` / `l` (run view) | Older / newer run; failed tasks show their error output |
-| `:` | SQL console: run any statement on a warehouse and page through results |
+| `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
+| `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `PgUp`/`PgDn` scroll, `Ctrl+S` export CSV |
 | `!` | Problems: everything failing across panes; `Enter` jumps to the item |
 | `Backspace` | Go up one level in the Unity Catalog tree |
-| `p` | Preview sample data for the selected table/view (may start a warehouse) |
+| `p` | Preview sample data for the selected table/view (may start a warehouse); `e` exports CSV |
 | `L` | Lineage: upstream/downstream tables for the selected table/view |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |

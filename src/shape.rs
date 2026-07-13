@@ -22,8 +22,20 @@ impl FromStr for Status {
             "IDLE" | "STOPPED" | "TERMINATED" | "DELETED" | "SKIPPED" | "CANCELED" => {
                 Status::Stopped
             }
-            "PENDING" | "STARTING" | "RESTARTING" | "DELETING" | "TERMINATING" | "QUEUED"
-            | "WAITING_FOR_RETRY" | "BLOCKED" => Status::Pending,
+            "PENDING"
+            | "STARTING"
+            | "RESTARTING"
+            | "DELETING"
+            | "TERMINATING"
+            | "QUEUED"
+            | "WAITING_FOR_RETRY"
+            | "BLOCKED"
+            | "CREATED"
+            | "INITIALIZING"
+            | "RESETTING"
+            | "SETTING_UP_TABLES"
+            | "WAITING_FOR_RESOURCES"
+            | "STOPPING" => Status::Pending,
             "FAILED" | "ERROR" | "TIMEDOUT" | "TIMED_OUT" | "INTERNAL_ERROR" => Status::Failed,
             other => Status::Unknown(other.to_string()),
         })
@@ -138,6 +150,35 @@ pub struct DetailData {
 pub struct TableData {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
+}
+
+impl TableData {
+    /// RFC-4180-ish CSV: fields with commas, quotes or newlines are
+    /// quoted, quotes doubled.
+    pub fn to_csv(&self) -> String {
+        fn field(s: &str) -> String {
+            if s.contains([',', '"', '\n', '\r']) {
+                format!("\"{}\"", s.replace('"', "\"\""))
+            } else {
+                s.to_string()
+            }
+        }
+        let mut out = String::new();
+        out.push_str(
+            &self
+                .headers
+                .iter()
+                .map(|h| field(h))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        out.push('\n');
+        for row in &self.rows {
+            out.push_str(&row.iter().map(|c| field(c)).collect::<Vec<_>>().join(","));
+            out.push('\n');
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1083,11 +1083,16 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
 
 fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let rv = app.run_view.as_ref().unwrap();
-    let acc = p.jobs;
+    let acc = accent(rv.panel, p);
+    let noun = if rv.panel == Panel::Jobs {
+        "run"
+    } else {
+        "update"
+    };
     let mut title_spans = vec![
-        Span::styled(" ⟳ ", Style::default().fg(acc)),
+        Span::styled(format!(" {} ", rv.panel.icon()), Style::default().fg(acc)),
         Span::styled(
-            format!("{} · run ", rv.job_name),
+            format!("{} · {noun} ", rv.owner_name),
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ),
     ];
@@ -1145,7 +1150,11 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     if !data.activity.is_empty() {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            "Tasks",
+            if rv.panel == Panel::Jobs {
+                "Tasks"
+            } else {
+                "Event log"
+            },
             Style::default().fg(acc).add_modifier(Modifier::BOLD),
         )));
         for (status, text) in &data.activity {
@@ -1351,7 +1360,13 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("↑"),
             dim("/"),
             key("↓"),
+            dim(" history   "),
+            key("pgup"),
+            dim("/"),
+            key("pgdn"),
             dim(" scroll rows   "),
+            key("^s"),
+            dim(" export csv   "),
             key("esc"),
             dim(" close"),
         ]
@@ -1364,6 +1379,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim("/"),
             key("k"),
             dim(" scroll rows   "),
+            key("e"),
+            dim(" export csv   "),
             key("q"),
             dim(" quit"),
         ]
@@ -1387,7 +1404,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("h"),
             dim("/"),
             key("l"),
-            dim(" older/newer run   "),
+            dim(" older/newer   "),
             key("j"),
             dim("/"),
             key("k"),
@@ -1399,13 +1416,16 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         ]
     } else if app.detail.is_some() {
         let mut spans = vec![dim(" "), key("esc"), dim(" back   ")];
-        if app
-            .detail
-            .as_ref()
-            .is_some_and(|d| d.panel == Panel::Jobs && d.section != "Lineage")
-        {
-            spans.push(key("enter"));
-            spans.push(dim(" latest run   "));
+        match app.detail.as_ref() {
+            Some(d) if d.panel == Panel::Jobs && d.section != "Lineage" => {
+                spans.push(key("enter"));
+                spans.push(dim(" latest run   "));
+            }
+            Some(d) if d.panel == Panel::Pipelines && d.section != "Lineage" => {
+                spans.push(key("enter"));
+                spans.push(dim(" latest update   "));
+            }
+            _ => {}
         }
         spans.extend([
             key("j"),
