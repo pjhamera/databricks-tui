@@ -57,6 +57,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   with sizes and ages, with Enter showing the head of any text file; table
   details include the full column schema plus size, file count, format and
   last-modified from DESCRIBE DETAIL, and `p` previews sample rows
+- Arrange the dashboard your way: `H` hides and reorders panes, the grid
+  adapts to what's visible, and the arrangement persists across sessions
+- `?` shows every keybinding, grouped by context, lazygit-style
 - Switch between workspaces (CLI profiles) without restarting
 - Zoom into any pane, non-blocking refresh — the UI never freezes
 - Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
@@ -150,6 +153,8 @@ them can be slow on busy workspaces.
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |
 | `Esc` | Close details / exit zoom |
 | `t` | Cycle color themes (dark, light, Catppuccin, Gruvbox, Dracula, Nord, Tokyo Night) |
+| `H` | Arrange panes: `space` shows/hides, `J`/`K` reorders — layout adapts and persists |
+| `?` | Help: all keybindings grouped by context |
 | `r` | Force refresh |
 | `q` / `Ctrl+C` | Quit |
 

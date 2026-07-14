@@ -11,6 +11,12 @@ pub struct Config {
     /// Chosen SQL warehouse per profile: profile → (id, name).
     #[serde(default)]
     pub warehouses: HashMap<String, (String, String)>,
+    /// Pane ids in display order (missing ones append in default order).
+    #[serde(default)]
+    pub pane_order: Vec<String>,
+    /// Pane ids the user has hidden.
+    #[serde(default)]
+    pub hidden_panes: Vec<String>,
 }
 
 fn path() -> Option<PathBuf> {

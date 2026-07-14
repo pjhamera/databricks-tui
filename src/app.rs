@@ -109,6 +109,18 @@ impl Panel {
         }
     }
 
+    /// Stable id used in the config file.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Panel::Clusters => "compute",
+            Panel::Jobs => "jobs",
+            Panel::Pipelines => "pipelines",
+            Panel::Warehouses => "warehouses",
+            Panel::Dashboards => "dashboards",
+            Panel::Catalog => "catalog",
+        }
+    }
+
     /// The databricks CLI command group whose `get <id>` returns item details.
     pub fn cli_group(&self) -> &'static str {
         match self {
@@ -365,6 +377,16 @@ pub struct App {
     failed_seen: [Option<std::collections::HashSet<String>>; 6],
     /// Ctrl+P fuzzy jump overlay.
     pub jump: Option<Jump>,
+    /// Canonical pane indices in display order.
+    pub pane_order: Vec<usize>,
+    /// Hidden flag per canonical pane index.
+    pub hidden: [bool; 6],
+    /// When Some, the pane-arrangement overlay is open at this position.
+    pub pane_cfg: Option<usize>,
+    /// True while the `?` help overlay is open.
+    pub help: bool,
+    /// Scroll offset of the help overlay.
+    pub help_scroll: u16,
     /// Statement id of the in-flight console query, for cancellation.
     sql_stmt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
 }
@@ -377,7 +399,7 @@ pub struct Jump {
 
 impl App {
     pub fn new(refresh_secs: u64, theme: ThemeMode) -> Self {
-        Self {
+        let mut app = Self {
             focus: Panel::Clusters,
             theme,
             zoomed: false,
@@ -428,7 +450,133 @@ impl App {
             config: crate::config::Config::load(),
             failed_seen: Default::default(),
             jump: None,
+            pane_order: (0..6).collect(),
+            hidden: [false; 6],
+            pane_cfg: None,
+            help: false,
+            help_scroll: 0,
             sql_stmt: None,
+        };
+        app.load_pane_prefs();
+        app
+    }
+
+    /// Applies pane order/visibility from the config file.
+    fn load_pane_prefs(&mut self) {
+        let idx_of = |id: &str| Panel::ALL.iter().position(|p| p.id() == id);
+        let mut order: Vec<usize> = self
+            .config
+            .pane_order
+            .iter()
+            .filter_map(|id| idx_of(id))
+            .collect();
+        for i in 0..6 {
+            if !order.contains(&i) {
+                order.push(i);
+            }
+        }
+        self.pane_order = order;
+        for id in &self.config.hidden_panes {
+            if let Some(i) = idx_of(id) {
+                self.hidden[i] = true;
+            }
+        }
+        self.ensure_focus_visible();
+    }
+
+    fn persist_panes(&mut self) {
+        self.config.pane_order = self
+            .pane_order
+            .iter()
+            .map(|&i| Panel::ALL[i].id().to_string())
+            .collect();
+        self.config.hidden_panes = (0..6)
+            .filter(|&i| self.hidden[i])
+            .map(|i| Panel::ALL[i].id().to_string())
+            .collect();
+        self.config.save();
+    }
+
+    /// Canonical pane indices currently shown, in display order.
+    pub fn visible_panes(&self) -> Vec<usize> {
+        self.pane_order
+            .iter()
+            .copied()
+            .filter(|&i| !self.hidden[i])
+            .collect()
+    }
+
+    /// Moves focus off a hidden pane onto the first visible one.
+    fn ensure_focus_visible(&mut self) {
+        let visible = self.visible_panes();
+        let focus_idx = Panel::ALL
+            .iter()
+            .position(|p| p == &self.focus)
+            .unwrap_or(0);
+        if !visible.contains(&focus_idx) {
+            if let Some(&first) = visible.first() {
+                self.focus = Panel::ALL[first];
+            }
+        }
+    }
+
+    /// Unhides a pane (used when a jump targets it).
+    fn reveal_pane(&mut self, idx: usize) {
+        if self.hidden[idx] {
+            self.hidden[idx] = false;
+            self.persist_panes();
+        }
+    }
+
+    pub fn open_pane_cfg(&mut self) {
+        self.pane_cfg = Some(0);
+    }
+
+    pub fn pane_cfg_next(&mut self) {
+        if let Some(i) = self.pane_cfg {
+            self.pane_cfg = Some((i + 1).min(5));
+        }
+    }
+
+    pub fn pane_cfg_prev(&mut self) {
+        if let Some(i) = self.pane_cfg {
+            self.pane_cfg = Some(i.saturating_sub(1));
+        }
+    }
+
+    /// Space in the overlay: toggles visibility of the selected pane
+    /// (refusing to hide the last visible one).
+    pub fn pane_cfg_toggle(&mut self) {
+        let Some(pos) = self.pane_cfg else {
+            return;
+        };
+        let idx = self.pane_order[pos];
+        if !self.hidden[idx] && self.visible_panes().len() == 1 {
+            self.flash = Some((
+                "✗ at least one pane has to stay visible".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        self.hidden[idx] = !self.hidden[idx];
+        self.ensure_focus_visible();
+        self.persist_panes();
+    }
+
+    /// J/K in the overlay: moves the selected pane down/up in the order.
+    pub fn pane_cfg_move(&mut self, delta: i32) {
+        let Some(pos) = self.pane_cfg else {
+            return;
+        };
+        let new = if delta < 0 {
+            pos.saturating_sub(1)
+        } else {
+            (pos + 1).min(5)
+        };
+        if new != pos {
+            self.pane_order.swap(pos, new);
+            self.pane_cfg = Some(new);
+            self.persist_panes();
         }
     }
 
@@ -651,6 +799,7 @@ impl App {
         let Some((panel_idx, name, _)) = matches.get(jump.index) else {
             return;
         };
+        self.reveal_pane(*panel_idx);
         self.focus = Panel::ALL[*panel_idx];
         self.filters[*panel_idx].clear();
         if let Some(Shape::List(items)) = &self.shapes[*panel_idx] {
@@ -712,6 +861,7 @@ impl App {
         let Some(problem) = pr.items.get(pr.index) else {
             return;
         };
+        self.reveal_pane(problem.panel);
         self.focus = Panel::ALL[problem.panel];
         // The pane's filter could hide the item we're jumping to.
         self.filters[problem.panel].clear();
@@ -2157,19 +2307,27 @@ impl App {
     }
 
     pub fn focus_next(&mut self) {
-        let idx = Panel::ALL
-            .iter()
-            .position(|p| p == &self.focus)
-            .unwrap_or(0);
-        self.focus = Panel::ALL[(idx + 1) % Panel::ALL.len()];
+        self.cycle_focus(1);
     }
 
     pub fn focus_prev(&mut self) {
-        let idx = Panel::ALL
+        self.cycle_focus(-1);
+    }
+
+    /// Cycles focus through the visible panes in display order.
+    fn cycle_focus(&mut self, delta: i32) {
+        let visible = self.visible_panes();
+        if visible.is_empty() {
+            return;
+        }
+        let focus_idx = Panel::ALL
             .iter()
             .position(|p| p == &self.focus)
             .unwrap_or(0);
-        self.focus = Panel::ALL[(idx + Panel::ALL.len() - 1) % Panel::ALL.len()];
+        let pos = visible.iter().position(|&i| i == focus_idx).unwrap_or(0);
+        let n = visible.len() as i32;
+        let next = ((pos as i32 + delta) % n + n) % n;
+        self.focus = Panel::ALL[visible[next as usize]];
     }
 
     pub fn needs_refresh(&self) -> bool {

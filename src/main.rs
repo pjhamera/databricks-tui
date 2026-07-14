@@ -338,6 +338,35 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.help {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            app.help_scroll = app.help_scroll.saturating_add(1)
+                        }
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            app.help_scroll = app.help_scroll.saturating_sub(1)
+                        }
+                        _ => {
+                            app.help = false;
+                            app.help_scroll = 0;
+                        }
+                    }
+                    needs_redraw = true;
+                } else if app.pane_cfg.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) | (KeyCode::Enter, _) | (KeyCode::Char('H'), _) => {
+                            app.pane_cfg = None
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => app.pane_cfg_next(),
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => app.pane_cfg_prev(),
+                        (KeyCode::Char(' '), _) => app.pane_cfg_toggle(),
+                        (KeyCode::Char('J'), _) => app.pane_cfg_move(1),
+                        (KeyCode::Char('K'), _) => app.pane_cfg_move(-1),
+                        _ => {}
+                    }
+                    needs_redraw = true;
                 } else if app.jump.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
@@ -543,6 +572,15 @@ async fn run(
                         }
                         (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                             app.open_jump();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('H'), _) => {
+                            app.open_pane_cfg();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('?'), _) => {
+                            app.help = true;
+                            app.help_scroll = 0;
                             needs_redraw = true;
                         }
                         (KeyCode::Char(':'), _) => {

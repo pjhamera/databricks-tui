@@ -274,52 +274,82 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.jump.is_some() {
             draw_jump(f, root[1], app, &p);
         }
+        if app.pane_cfg.is_some() {
+            draw_pane_cfg(f, root[1], app, &p);
+        }
+        if app.help {
+            draw_help(f, root[1], app, &p);
+        }
         return;
     }
 
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(root[1]);
+    // The grid adapts to however many panes are visible, in the user's
+    // order: left column gets the first half (rounded up), right the rest.
+    let visible = app.visible_panes();
+    if visible.is_empty() {
+        let par = Paragraph::new("all panes hidden — press H to bring them back")
+            .style(Style::default().fg(p.dim))
+            .alignment(Alignment::Center);
+        f.render_widget(par, root[1]);
+    } else {
+        let rows_of = |n: usize| -> Vec<Constraint> {
+            (0..n).map(|_| Constraint::Ratio(1, n as u32)).collect()
+        };
+        let left_count = visible.len().div_ceil(2);
+        let right_count = visible.len() - left_count;
+        let mut areas: Vec<Rect> = Vec::new();
+        if right_count == 0 {
+            areas.extend(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(rows_of(left_count))
+                    .split(root[1])
+                    .iter(),
+            );
+        } else {
+            let body = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(root[1]);
+            areas.extend(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(rows_of(left_count))
+                    .split(body[0])
+                    .iter(),
+            );
+            areas.extend(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(rows_of(right_count))
+                    .split(body[1])
+                    .iter(),
+            );
+        }
 
-    let rows = [
-        Constraint::Percentage(34),
-        Constraint::Percentage(33),
-        Constraint::Percentage(33),
-    ];
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(rows)
-        .split(body[0]);
-
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(rows)
-        .split(body[1]);
-
-    let areas = [left[0], left[1], right[0], right[1], right[2], left[2]];
-
-    for (i, panel) in Panel::ALL.iter().enumerate() {
-        let focused = app.focus == *panel;
-        let shape = app.shapes[i].as_ref();
-        let selected = focused.then(|| app.selection(i));
-        let fresh = app.updated_at[i]
-            .map(|t| t.elapsed() < Duration::from_millis(1200))
-            .unwrap_or(false);
-        draw_panel(
-            f,
-            areas[i],
-            *panel,
-            shape,
-            focused,
-            selected,
-            fresh,
-            &app.uc_path.join("."),
-            app.spinner(),
-            &app.filters[i],
-            app.filter_entry && focused,
-            &p,
-        );
+        for (slot, &i) in visible.iter().enumerate() {
+            let panel = Panel::ALL[i];
+            let focused = app.focus == panel;
+            let shape = app.shapes[i].as_ref();
+            let selected = focused.then(|| app.selection(i));
+            let fresh = app.updated_at[i]
+                .map(|t| t.elapsed() < Duration::from_millis(1200))
+                .unwrap_or(false);
+            draw_panel(
+                f,
+                areas[slot],
+                panel,
+                shape,
+                focused,
+                selected,
+                fresh,
+                &app.uc_path.join("."),
+                app.spinner(),
+                &app.filters[i],
+                app.filter_entry && focused,
+                &p,
+            );
+        }
     }
 
     if app.picker.is_some() {
@@ -334,6 +364,175 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.jump.is_some() {
         draw_jump(f, root[1], app, &p);
     }
+    if app.pane_cfg.is_some() {
+        draw_pane_cfg(f, root[1], app, &p);
+    }
+    if app.help {
+        draw_help(f, root[1], app, &p);
+    }
+}
+
+fn draw_pane_cfg(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(selected) = app.pane_cfg else {
+        return;
+    };
+    let width = 52.min(area.width.saturating_sub(4));
+    let height = 11.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ▦ ", Style::default().fg(p.key)),
+            Span::styled(
+                "Panes ",
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(p.key).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 0));
+    let items: Vec<ListItem> = app
+        .pane_order
+        .iter()
+        .map(|&i| {
+            let panel = Panel::ALL[i];
+            let (mark, style) = if app.hidden[i] {
+                ("○ ", Style::default().fg(p.dim))
+            } else {
+                ("● ", Style::default().fg(p.ok))
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(mark, style),
+                Span::styled(
+                    format!("{} ", panel.icon()),
+                    Style::default().fg(accent(panel, p)),
+                ),
+                Span::styled(
+                    panel.title(),
+                    if app.hidden[i] {
+                        Style::default().fg(p.dim)
+                    } else {
+                        Style::default().fg(p.text)
+                    },
+                ),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(selected));
+    f.render_stateful_widget(list, popup, &mut state);
+}
+
+fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let width = 74.min(area.width.saturating_sub(4));
+    let height = area.height.saturating_sub(2);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ? ", Style::default().fg(p.key)),
+            Span::styled(
+                "Keys ",
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(p.key).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 0));
+
+    let sections: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Global",
+            &[
+                ("tab / l, shift+tab / h", "focus next / previous pane"),
+                ("j / k", "select item"),
+                ("enter", "open details / drill down"),
+                ("/", "filter the focused pane (esc clears)"),
+                ("ctrl+p", "command palette: fuzzy-jump anywhere"),
+                ("!", "problems: everything failing, enter jumps"),
+                (":", "SQL console (prefilled on a catalog table)"),
+                ("$", "cost view: DBUs, dollars, top spenders"),
+                ("H", "arrange panes: hide and reorder"),
+                ("z", "zoom the focused pane"),
+                ("w", "switch workspace profile"),
+                ("t", "cycle color theme"),
+                ("r", "refresh now"),
+                ("?", "this help"),
+                ("q / ctrl+c", "quit"),
+            ],
+        ),
+        (
+            "Focused pane",
+            &[
+                ("s", "start / stop / run the selected item"),
+                ("g", "access: grants and permissions"),
+                ("o", "open in the workspace web UI"),
+            ],
+        ),
+        (
+            "Unity Catalog pane",
+            &[
+                ("enter / backspace", "drill down / up (into volumes too)"),
+                ("p / P", "preview table rows (P picks the warehouse)"),
+                ("L", "lineage: upstream and downstream tables"),
+                (":", "query the selected table"),
+                ("enter on a file", "peek at its first 200 lines"),
+            ],
+        ),
+        (
+            "Details & runs",
+            &[
+                ("enter", "job/pipeline detail → latest run/update"),
+                ("h / l", "older / newer run"),
+                ("s", "cancel the shown run"),
+                ("j / k, J", "scroll · toggle raw JSON"),
+                ("e", "in previews: export rows to CSV"),
+            ],
+        ),
+        (
+            "SQL console",
+            &[
+                ("enter", "run the statement"),
+                ("↑ / ↓, ctrl+r", "history · incremental search"),
+                ("ctrl+x", "compose in $EDITOR"),
+                ("ctrl+s", "export results to CSV"),
+                ("pgup / pgdn", "scroll results"),
+                ("esc", "cancel a running query, else close"),
+            ],
+        ),
+    ];
+    let mut lines: Vec<Line> = Vec::new();
+    for (title, keys) in sections {
+        lines.push(Line::from(Span::styled(
+            *title,
+            Style::default().fg(p.key).add_modifier(Modifier::BOLD),
+        )));
+        for (k, desc) in *keys {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {k:<24}"), Style::default().fg(p.warn)),
+                Span::styled(*desc, Style::default().fg(p.text)),
+            ]));
+        }
+        lines.push(Line::default());
+    }
+    let par = Paragraph::new(lines)
+        .scroll((app.help_scroll, 0))
+        .block(block);
+    f.render_widget(par, popup);
 }
 
 fn draw_jump(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -1407,7 +1606,31 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let mut spans = if app.jump.is_some() {
+    let mut spans = if app.help {
+        vec![
+            dim(" "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" scroll   any other key closes"),
+        ]
+    } else if app.pane_cfg.is_some() {
+        vec![
+            dim(" "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" select   "),
+            key("space"),
+            dim(" show/hide   "),
+            key("J"),
+            dim("/"),
+            key("K"),
+            dim(" move   "),
+            key("esc"),
+            dim(" done"),
+        ]
+    } else if app.jump.is_some() {
         vec![
             dim(" type to search everything   "),
             key("\u{2191}"),
@@ -1633,6 +1856,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" theme   "),
             key("r"),
             dim(" refresh   "),
+            key("?"),
+            dim(" help   "),
             key("q"),
             dim(" quit"),
         ]);
