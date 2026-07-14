@@ -190,6 +190,15 @@ fn accent(panel: Panel, p: &Palette) -> Color {
         Panel::Warehouses => p.warehouses,
         Panel::Dashboards => p.key,
         Panel::Catalog => p.catalog,
+        Panel::Secrets => p.warn,
+    }
+}
+
+fn pane_breadcrumb(app: &App, panel: Panel) -> String {
+    match panel {
+        Panel::Catalog => app.uc_path.join("."),
+        Panel::Secrets => app.secret_scope.clone().unwrap_or_default(),
+        _ => String::new(),
     }
 }
 
@@ -255,7 +264,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             true,
             Some(app.selection(idx)),
             false,
-            &app.uc_path.join("."),
+            &pane_breadcrumb(app, app.focus),
             app.spinner(),
             &app.filters[idx],
             app.filter_entry,
@@ -276,6 +285,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         if app.pane_cfg.is_some() {
             draw_pane_cfg(f, root[1], app, &p);
+        }
+        if app.secret_form.is_some() {
+            draw_secret_form(f, root[1], app, &p);
         }
         if app.help {
             draw_help(f, root[1], app, &p);
@@ -343,7 +355,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 focused,
                 selected,
                 fresh,
-                &app.uc_path.join("."),
+                &pane_breadcrumb(app, panel),
                 app.spinner(),
                 &app.filters[i],
                 app.filter_entry && focused,
@@ -367,9 +379,73 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.pane_cfg.is_some() {
         draw_pane_cfg(f, root[1], app, &p);
     }
+    if app.secret_form.is_some() {
+        draw_secret_form(f, root[1], app, &p);
+    }
     if app.help {
         draw_help(f, root[1], app, &p);
     }
+}
+
+fn draw_secret_form(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(form) = &app.secret_form else {
+        return;
+    };
+    let width = 60.min(area.width.saturating_sub(4));
+    let height = 6.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let title = match &form.scope {
+        None => "New secret scope ".to_string(),
+        Some(s) => format!("New secret in {s} "),
+    };
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ◈ ", Style::default().fg(p.warn)),
+            Span::styled(
+                title,
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(p.warn).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 0));
+    let label0 = if form.scope.is_none() {
+        "name "
+    } else {
+        "key  "
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(label0, Style::default().fg(p.dim)),
+        Span::styled(form.key.as_str(), Style::default().fg(p.text)),
+        if form.stage == 0 {
+            Span::styled("▏", Style::default().fg(p.warn))
+        } else {
+            Span::raw("")
+        },
+    ])];
+    if form.scope.is_some() {
+        // The value is never echoed — bullets only.
+        lines.push(Line::from(vec![
+            Span::styled("value ", Style::default().fg(p.dim)),
+            Span::styled(
+                "•".repeat(form.value.chars().count()),
+                Style::default().fg(p.text),
+            ),
+            if form.stage == 1 {
+                Span::styled("▏", Style::default().fg(p.warn))
+            } else {
+                Span::raw("")
+            },
+        ]));
+    }
+    f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 fn draw_pane_cfg(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -501,6 +577,15 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("s", "cancel the shown run"),
                 ("j / k, J", "scroll · toggle raw JSON"),
                 ("e", "in previews: export rows to CSV"),
+            ],
+        ),
+        (
+            "Secret scopes pane",
+            &[
+                ("enter / backspace", "open a scope / back to scopes"),
+                ("a", "create a scope / add a secret (value masked)"),
+                ("x", "delete the selected scope or secret"),
+                ("g", "scope ACLs"),
             ],
         ),
         (
@@ -1364,10 +1449,19 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(acc).add_modifier(Modifier::BOLD),
         )));
         for (status, text) in &data.activity {
-            lines.push(Line::from(vec![
-                Span::styled("● ", Style::default().fg(status_color(status, p))),
-                Span::styled(text.as_str(), Style::default().fg(p.text)),
-            ]));
+            // Lineage tree guides carry their own structure — no dot.
+            let treeish = text.is_empty() || text.starts_with(['├', '└', '│', '▲', '▼', ' ']);
+            if treeish {
+                lines.push(Line::from(Span::styled(
+                    text.as_str(),
+                    Style::default().fg(status_color(status, p)),
+                )));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("● ", Style::default().fg(status_color(status, p))),
+                    Span::styled(text.as_str(), Style::default().fg(p.text)),
+                ]));
+            }
         }
     }
     let par = Paragraph::new(lines).scroll((d.scroll, 0)).block(block);
@@ -1606,7 +1700,15 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let mut spans = if app.help {
+    let mut spans = if app.secret_form.is_some() {
+        vec![
+            dim(" type   "),
+            key("enter"),
+            dim(" next / save   "),
+            key("esc"),
+            dim(" cancel"),
+        ]
+    } else if app.help {
         vec![
             dim(" "),
             key("j"),
@@ -1827,6 +1929,20 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 }
             }
             Panel::Dashboards => {}
+            Panel::Secrets => {
+                if app.secret_scope.is_some() {
+                    spans.push(key("bksp"));
+                    spans.push(dim(" up   "));
+                }
+                spans.push(key("a"));
+                spans.push(dim(if app.secret_scope.is_some() {
+                    " add secret   "
+                } else {
+                    " new scope   "
+                }));
+                spans.push(key("x"));
+                spans.push(dim(" delete   "));
+            }
             _ => {
                 spans.push(key("s"));
                 spans.push(dim(" action   "));
@@ -1921,7 +2037,7 @@ fn draw_panel(
         (_, Some(Shape::Table(data))) => format!(" · {}", data.rows.len()),
         _ => String::new(),
     };
-    let crumb = if panel == Panel::Catalog && !breadcrumb.is_empty() {
+    let crumb = if !breadcrumb.is_empty() {
         format!(" ▸ {breadcrumb}")
     } else {
         String::new()
@@ -1975,6 +2091,7 @@ fn draw_panel(
                     Panel::Warehouses => "no warehouses",
                     Panel::Dashboards => "no dashboards yet",
                     Panel::Catalog => "nothing at this level",
+                    Panel::Secrets => "no secret scopes",
                 };
                 format!("∅ {msg}")
             };

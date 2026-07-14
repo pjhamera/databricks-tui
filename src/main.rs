@@ -220,6 +220,9 @@ async fn run(
         if app.poll_uc() {
             needs_redraw = true;
         }
+        if app.poll_secrets() {
+            needs_redraw = true;
+        }
         if app.poll_preview() {
             needs_redraw = true;
         }
@@ -364,6 +367,16 @@ async fn run(
                         (KeyCode::Char(' '), _) => app.pane_cfg_toggle(),
                         (KeyCode::Char('J'), _) => app.pane_cfg_move(1),
                         (KeyCode::Char('K'), _) => app.pane_cfg_move(-1),
+                        _ => {}
+                    }
+                    needs_redraw = true;
+                } else if app.secret_form.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) => app.secret_form = None,
+                        (KeyCode::Enter, _) => app.secret_form_submit(&cli),
+                        (KeyCode::Backspace, _) => app.secret_form_pop(),
+                        (KeyCode::Char(ch), _) => app.secret_form_push(ch),
                         _ => {}
                     }
                     needs_redraw = true;
@@ -578,6 +591,14 @@ async fn run(
                             app.open_pane_cfg();
                             needs_redraw = true;
                         }
+                        (KeyCode::Char('a'), _) => {
+                            app.open_secret_form();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('x'), _) => {
+                            app.request_secret_delete();
+                            needs_redraw = true;
+                        }
                         (KeyCode::Char('?'), _) => {
                             app.help = true;
                             app.help_scroll = 0;
@@ -608,12 +629,12 @@ async fn run(
                             needs_redraw = true;
                         }
                         (KeyCode::Enter, _) => {
-                            if !app.uc_drill(&cli) {
+                            if !app.secrets_drill(&cli) && !app.uc_drill(&cli) {
                                 app.open_detail(&cli);
                             }
                             needs_redraw = true;
                         }
-                        (KeyCode::Backspace, _) if app.uc_up(&cli) => {
+                        (KeyCode::Backspace, _) if app.secrets_up(&cli) || app.uc_up(&cli) => {
                             needs_redraw = true;
                         }
                         (KeyCode::Char('s'), _) => {

@@ -48,8 +48,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT), with
   list-price dollar estimates when system.billing.list_prices is readable,
   and a top-spenders table naming the jobs/clusters/warehouses behind the DBUs
-- Table lineage: upstream and downstream tables for any table/view, from
-  system.access.table_lineage
+- Table lineage as a tree: up to 3 hops upstream and downstream from
+  system.access.table_lineage, rendered with branch guides so you can
+  follow a table's ancestry at a glance
 - Jump to any resource in the workspace web UI with one key
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
@@ -60,6 +61,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Arrange the dashboard your way: `H` hides and reorders panes, the grid
   adapts to what's visible, and the arrangement persists across sessions
 - `?` shows every keybinding, grouped by context, lazygit-style
+- Secret scopes pane: browse scopes and keys (with last-updated), create
+  scopes, add secrets (values masked while typing, never displayed),
+  delete with confirmation, and inspect scope ACLs with `g`
 - Switch between workspaces (CLI profiles) without restarting
 - Zoom into any pane, non-blocking refresh — the UI never freezes
 - Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
@@ -141,9 +145,10 @@ them can be slow on busy workspaces.
 | `!` | Problems: everything failing across panes; `Enter` jumps to the item |
 | `Ctrl+P` | Command palette: fuzzy-search everything loaded, `Enter` jumps to it |
 | `s` (run view) | Cancel the shown run / stop the pipeline update |
+| `a` / `x` (secrets pane) | Create scope or add secret (masked) / delete with confirm |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse); `e` exports CSV |
-| `L` | Lineage: upstream/downstream tables for the selected table/view |
+| `L` | Lineage tree: up to 3 hops upstream/downstream of the selected table/view |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
 | `g` | Show access: effective grants / permissions for the selected item |

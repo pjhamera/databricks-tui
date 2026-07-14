@@ -75,6 +75,7 @@ pub enum Panel {
     Warehouses,
     Dashboards,
     Catalog,
+    Secrets,
 }
 
 impl Panel {
@@ -85,6 +86,7 @@ impl Panel {
         Panel::Warehouses,
         Panel::Dashboards,
         Panel::Catalog,
+        Panel::Secrets,
     ];
 
     pub fn title(&self) -> &'static str {
@@ -95,6 +97,7 @@ impl Panel {
             Panel::Warehouses => "SQL Warehouses",
             Panel::Dashboards => "AI/BI Dashboards",
             Panel::Catalog => "Unity Catalog",
+            Panel::Secrets => "Secret Scopes",
         }
     }
 
@@ -106,6 +109,7 @@ impl Panel {
             Panel::Warehouses => "⌁",
             Panel::Dashboards => "▦",
             Panel::Catalog => "⧉",
+            Panel::Secrets => "◈",
         }
     }
 
@@ -118,6 +122,7 @@ impl Panel {
             Panel::Warehouses => "warehouses",
             Panel::Dashboards => "dashboards",
             Panel::Catalog => "catalog",
+            Panel::Secrets => "secrets",
         }
     }
 
@@ -130,6 +135,7 @@ impl Panel {
             Panel::Warehouses => "warehouses",
             Panel::Dashboards => "lakeview",
             Panel::Catalog => "tables",
+            Panel::Secrets => "secrets",
         }
     }
 }
@@ -321,7 +327,7 @@ pub struct App {
     pub detail: Option<Detail>,
     pub confirm: Option<Confirm>,
     pub flash: Option<(String, Instant)>,
-    pub selected: [usize; 6],
+    pub selected: [usize; 7],
     pub host: Option<String>,
     /// Available profiles from ~/.databrickscfg and the active one.
     pub profiles: Vec<String>,
@@ -365,22 +371,22 @@ pub struct App {
     /// Splash screen deadline; None once dismissed.
     pub splash_until: Option<Instant>,
     /// When each pane last received fresh data — drives the title flash.
-    pub updated_at: [Option<Instant>; 6],
+    pub updated_at: [Option<Instant>; 7],
     /// Per-pane search filter; empty string means no filter.
-    pub filters: [String; 6],
+    pub filters: [String; 7],
     /// True while the user is typing a filter for the focused pane.
     pub filter_entry: bool,
     /// Persisted preferences (theme, warehouse per profile).
     pub config: crate::config::Config,
     /// Failed item names per pane at the last refresh — None until the
     /// pane has loaded once, so the first load never alerts.
-    failed_seen: [Option<std::collections::HashSet<String>>; 6],
+    failed_seen: [Option<std::collections::HashSet<String>>; 7],
     /// Ctrl+P fuzzy jump overlay.
     pub jump: Option<Jump>,
     /// Canonical pane indices in display order.
     pub pane_order: Vec<usize>,
     /// Hidden flag per canonical pane index.
-    pub hidden: [bool; 6],
+    pub hidden: [bool; 7],
     /// When Some, the pane-arrangement overlay is open at this position.
     pub pane_cfg: Option<usize>,
     /// True while the `?` help overlay is open.
@@ -389,6 +395,11 @@ pub struct App {
     pub help_scroll: u16,
     /// Statement id of the in-flight console query, for cancellation.
     sql_stmt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+    /// Drilled-into secret scope; None = the scopes listing.
+    pub secret_scope: Option<String>,
+    secrets_rx: Option<oneshot::Receiver<Result<Shape, String>>>,
+    /// Create-scope / add-secret input form.
+    pub secret_form: Option<SecretForm>,
 }
 
 /// Ctrl+P overlay: fuzzy-search everything loaded, Enter jumps to it.
@@ -397,13 +408,23 @@ pub struct Jump {
     pub index: usize,
 }
 
+/// Two-step input: a scope name, or a key then a (masked) value.
+pub struct SecretForm {
+    /// Scope the secret goes into; None = creating a new scope.
+    pub scope: Option<String>,
+    pub key: String,
+    pub value: String,
+    /// 0 = typing the name/key, 1 = typing the value.
+    pub stage: u8,
+}
+
 impl App {
     pub fn new(refresh_secs: u64, theme: ThemeMode) -> Self {
         let mut app = Self {
             focus: Panel::Clusters,
             theme,
             zoomed: false,
-            shapes: vec![None; 6],
+            shapes: vec![None; 7],
             user_badge: None,
             error: None,
             refresh_interval: Duration::from_secs(refresh_secs),
@@ -414,7 +435,7 @@ impl App {
             detail: None,
             confirm: None,
             flash: None,
-            selected: [0; 6],
+            selected: [0; 7],
             host: None,
             profiles: Vec::new(),
             profile: None,
@@ -444,18 +465,21 @@ impl App {
             in_flight: 0,
             spinner_frame: 0,
             splash_until: Some(Instant::now() + Duration::from_millis(1600)),
-            updated_at: [None; 6],
+            updated_at: [None; 7],
             filters: Default::default(),
             filter_entry: false,
             config: crate::config::Config::load(),
             failed_seen: Default::default(),
             jump: None,
-            pane_order: (0..6).collect(),
-            hidden: [false; 6],
+            pane_order: (0..7).collect(),
+            hidden: [false; 7],
             pane_cfg: None,
             help: false,
             help_scroll: 0,
             sql_stmt: None,
+            secret_scope: None,
+            secrets_rx: None,
+            secret_form: None,
         };
         app.load_pane_prefs();
         app
@@ -470,7 +494,7 @@ impl App {
             .iter()
             .filter_map(|id| idx_of(id))
             .collect();
-        for i in 0..6 {
+        for i in 0..7 {
             if !order.contains(&i) {
                 order.push(i);
             }
@@ -490,7 +514,7 @@ impl App {
             .iter()
             .map(|&i| Panel::ALL[i].id().to_string())
             .collect();
-        self.config.hidden_panes = (0..6)
+        self.config.hidden_panes = (0..7)
             .filter(|&i| self.hidden[i])
             .map(|i| Panel::ALL[i].id().to_string())
             .collect();
@@ -534,7 +558,7 @@ impl App {
 
     pub fn pane_cfg_next(&mut self) {
         if let Some(i) = self.pane_cfg {
-            self.pane_cfg = Some((i + 1).min(5));
+            self.pane_cfg = Some((i + 1).min(6));
         }
     }
 
@@ -571,7 +595,7 @@ impl App {
         let new = if delta < 0 {
             pos.saturating_sub(1)
         } else {
-            (pos + 1).min(5)
+            (pos + 1).min(6)
         };
         if new != pos {
             self.pane_order.swap(pos, new);
@@ -584,7 +608,7 @@ impl App {
     /// refresh and the next.
     fn alert_new_failures(&mut self, idx: usize) {
         // Catalog "error rows" are listing problems, not runtime failures.
-        if idx == 5 {
+        if idx >= 5 {
             return;
         }
         let Some(Shape::List(items)) = &self.shapes[idx] else {
@@ -688,16 +712,19 @@ impl App {
         self.profile = Some(name);
 
         // Drop all workspace-specific state; panes go back to loading.
-        self.shapes = vec![None; 6];
+        self.shapes = vec![None; 7];
         self.user_badge = None;
         self.host = None;
-        self.selected = [0; 6];
+        self.selected = [0; 7];
         self.detail = None;
         self.detail_rx = None;
         self.confirm = None;
         self.problems = None;
         self.uc_path.clear();
         self.uc_rx = None;
+        self.secret_scope = None;
+        self.secrets_rx = None;
+        self.secret_form = None;
         self.preview = None;
         self.preview_rx = None;
         self.wh_picker = None;
@@ -1095,6 +1122,248 @@ impl App {
                 .await
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
+        });
+    }
+
+    /// Enter on a secret scope: descend into its keys.
+    pub fn secrets_drill(&mut self, cli: &Arc<DatabricksCli>) -> bool {
+        if self.focus != Panel::Secrets || self.secret_scope.is_some() {
+            return false;
+        }
+        let Some(item) = self.selected_item() else {
+            return true; // empty pane: swallow the key
+        };
+        self.secret_scope = Some(item.name.clone());
+        self.refresh_secrets(cli);
+        true
+    }
+
+    /// Backspace inside a scope: back to the scopes listing.
+    pub fn secrets_up(&mut self, cli: &Arc<DatabricksCli>) -> bool {
+        if self.focus != Panel::Secrets || self.secret_scope.is_none() {
+            return false;
+        }
+        self.secret_scope = None;
+        self.refresh_secrets(cli);
+        true
+    }
+
+    fn refresh_secrets(&mut self, cli: &Arc<DatabricksCli>) {
+        let idx = 6;
+        self.shapes[idx] = None;
+        self.selected[idx] = 0;
+        self.filters[idx].clear();
+        let (tx, rx) = oneshot::channel();
+        self.secrets_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        let scope = self.secret_scope.clone();
+        tokio::spawn(async move {
+            let result = fetchers::secrets::fetch(&cli, scope.as_deref())
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn poll_secrets(&mut self) -> bool {
+        let Some(rx) = &mut self.secrets_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.shapes[6] = Some(match result {
+                    Ok(shape) => shape,
+                    Err(e) => Shape::Text(format!("✗ {e}")),
+                });
+                self.updated_at[6] = Some(Instant::now());
+                self.secrets_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.secrets_rx = None;
+                true
+            }
+        }
+    }
+
+    /// `a` in the secrets pane: create a scope (top level) or add a
+    /// secret (inside a scope).
+    pub fn open_secret_form(&mut self) {
+        if self.focus != Panel::Secrets {
+            return;
+        }
+        self.secret_form = Some(SecretForm {
+            scope: self.secret_scope.clone(),
+            key: String::new(),
+            value: String::new(),
+            stage: 0,
+        });
+    }
+
+    pub fn secret_form_push(&mut self, c: char) {
+        if let Some(form) = &mut self.secret_form {
+            if form.stage == 0 {
+                form.key.push(c);
+            } else {
+                form.value.push(c);
+            }
+        }
+    }
+
+    pub fn secret_form_pop(&mut self) {
+        if let Some(form) = &mut self.secret_form {
+            if form.stage == 0 {
+                form.key.pop();
+            } else {
+                form.value.pop();
+            }
+        }
+    }
+
+    /// Enter in the form: advance to the value stage, or submit.
+    pub fn secret_form_submit(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(form) = &mut self.secret_form else {
+            return;
+        };
+        if form.key.trim().is_empty() {
+            return;
+        }
+        match (form.scope.clone(), form.stage) {
+            // New scope: single field.
+            (None, _) => {
+                let name = form.key.trim().to_string();
+                self.secret_form = None;
+                self.run_secret_action(
+                    cli,
+                    format!("Create scope “{name}”"),
+                    vec!["secrets".into(), "create-scope".into(), name],
+                );
+            }
+            // Secret: key first, then value.
+            (Some(_), 0) => form.stage = 1,
+            (Some(scope), _) => {
+                let key = form.key.trim().to_string();
+                let value = form.value.clone();
+                self.secret_form = None;
+                self.run_secret_action(
+                    cli,
+                    format!("Put secret “{key}” in “{scope}”"),
+                    vec![
+                        "secrets".into(),
+                        "put-secret".into(),
+                        scope,
+                        key,
+                        "--string-value".into(),
+                        value,
+                    ],
+                );
+            }
+        }
+    }
+
+    /// Runs a secrets mutation right away (the form itself was the
+    /// deliberate step); the usual action poll refreshes the panes.
+    fn run_secret_action(&mut self, cli: &Arc<DatabricksCli>, label: String, args: Vec<String>) {
+        self.flash = Some((format!("⏳ {label}…"), Instant::now()));
+        let (tx, rx) = oneshot::channel();
+        self.action_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let result = match cli.run_action(&arg_refs).await {
+                Ok(()) => Ok(format!("✓ {label} — done")),
+                Err(e) => Err(format!("✗ {e:#}")),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// `x` in the secrets pane: delete the selected scope or key.
+    pub fn request_secret_delete(&mut self) {
+        if self.focus != Panel::Secrets {
+            return;
+        }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let name = item.name.clone();
+        let (message, args) = match &self.secret_scope {
+            None => (
+                format!("Delete scope “{name}” and all its secrets?"),
+                vec!["secrets".to_string(), "delete-scope".to_string(), name],
+            ),
+            Some(scope) => (
+                format!("Delete secret “{name}” from “{scope}”?"),
+                vec![
+                    "secrets".to_string(),
+                    "delete-secret".to_string(),
+                    scope.clone(),
+                    name,
+                ],
+            ),
+        };
+        self.confirm = Some(Confirm { message, args });
+    }
+
+    /// `g` in the secrets pane: the scope's ACLs.
+    fn open_secret_acls(&mut self, cli: &Arc<DatabricksCli>) {
+        let scope = match &self.secret_scope {
+            Some(s) => Some(s.clone()),
+            None => self.selected_item().map(|i| i.name.clone()),
+        };
+        let Some(scope) = scope else {
+            return;
+        };
+        self.detail = Some(Detail {
+            panel: Panel::Secrets,
+            name: scope.clone(),
+            id: scope.clone(),
+            kind: None,
+            section: "Access",
+            data: None,
+            show_raw: false,
+            scroll: 0,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.detail_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let acl_args = ["secrets", "list-acls", &scope];
+            let data = match cli.run(&acl_args).await {
+                Ok(json) => {
+                    let raw =
+                        serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
+                    let activity: Vec<(Status, String)> = json["items"]
+                        .as_array()
+                        .map(|acls| {
+                            acls.iter()
+                                .map(|a| {
+                                    let principal = a["principal"].as_str().unwrap_or("?");
+                                    let perm = a["permission"].as_str().unwrap_or("?");
+                                    let status = if perm == "MANAGE" {
+                                        Status::Success
+                                    } else {
+                                        Status::Unknown(String::new())
+                                    };
+                                    (status, format!("{principal}  ·  {perm}"))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    DetailData {
+                        summary: vec![("Scope".to_string(), scope.clone())],
+                        activity,
+                        raw,
+                    }
+                }
+                Err(e) => DetailData {
+                    summary: Vec::new(),
+                    activity: Vec::new(),
+                    raw: format!("{e:#}"),
+                },
+            };
+            let _ = tx.send(data);
         });
     }
 
@@ -1829,6 +2098,9 @@ impl App {
     /// Opens the access view for the selected item: effective UC grants
     /// or the workspace object ACL.
     pub fn open_grants(&mut self, cli: &Arc<DatabricksCli>) {
+        if self.focus == Panel::Secrets {
+            return self.open_secret_acls(cli);
+        }
         let Some(item) = self.selected_item() else {
             return;
         };
@@ -1848,6 +2120,8 @@ impl App {
             Panel::Pipelines => (false, "pipelines"),
             Panel::Warehouses => (false, "warehouses"),
             Panel::Dashboards => (false, "dashboards"),
+            // Secrets ACLs are handled by open_secret_acls above.
+            Panel::Secrets => return,
         };
         self.detail = Some(Detail {
             panel: self.focus,
@@ -2084,8 +2358,11 @@ impl App {
     /// Prepares a contextual action for the selected item, pending confirmation:
     /// start/stop for clusters, warehouses and pipelines, run-now for jobs.
     pub fn request_action(&mut self) {
-        // Dashboards and Unity Catalog objects have no start/stop/run semantics.
-        if matches!(self.focus, Panel::Dashboards | Panel::Catalog) {
+        // Dashboards, Unity Catalog and secrets have no start/stop/run semantics.
+        if matches!(
+            self.focus,
+            Panel::Dashboards | Panel::Catalog | Panel::Secrets
+        ) {
             return;
         }
         let Some(item) = self.selected_item() else {
@@ -2246,6 +2523,8 @@ impl App {
             Panel::Warehouses => format!("sql/warehouses/{id}"),
             Panel::Dashboards => format!("sql/dashboardsv3/{id}"),
             Panel::Catalog => format!("explore/data/{}", id.replace('.', "/")),
+            // Secret scopes have no workspace-UI page.
+            Panel::Secrets => return,
         };
         let url = format!("{}/{}", host.trim_end_matches('/'), path);
         #[cfg(target_os = "macos")]
@@ -2344,7 +2623,7 @@ impl App {
 
         let (tx, rx) = mpsc::unbounded_channel();
         self.pending = Some(rx);
-        self.in_flight = 7;
+        self.in_flight = 8;
 
         // One task per source so each panel updates as soon as its fetch lands,
         // instead of waiting for the slowest of the five.
@@ -2377,6 +2656,17 @@ impl App {
                     .await
                     .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Update::Panel(5, result));
+            });
+        }
+        {
+            let cli = Arc::clone(cli);
+            let tx = tx.clone();
+            let scope = self.secret_scope.clone();
+            tokio::spawn(async move {
+                let result = fetchers::secrets::fetch(&cli, scope.as_deref())
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Update::Panel(6, result));
             });
         }
     }
