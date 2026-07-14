@@ -166,6 +166,10 @@ JSON, `o` opens the browser, and `Esc` goes back.
 
 - [Databricks CLI v0.200+](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) installed and authenticated
 
+See [docs/permissions.md](docs/permissions.md) for what each feature
+needs (system tables, warehouse access, …) and
+[docs/troubleshooting.md](docs/troubleshooting.md) for common issues.
+
 ## Release binaries
 
 Push a `v*` tag to trigger a GitHub Actions build that publishes `.tar.gz`
