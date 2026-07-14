@@ -1,6 +1,6 @@
 [package]
 name = "databricks-tui"
-version = "0.17.2"
+version = "0.17.3"
 edition = "2021"
 description = "Terminal dashboard for Databricks: compute, jobs, pipelines, warehouses, Unity Catalog, SQL console, costs and lineage"
 license = "MIT"
