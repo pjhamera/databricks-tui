@@ -338,6 +338,19 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.jump.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) => app.jump = None,
+                        (KeyCode::Enter, _) => app.jump_go(),
+                        (KeyCode::Backspace, _) => app.jump_pop(),
+                        (KeyCode::Down, _) => app.jump_next(),
+                        (KeyCode::Up, _) => app.jump_prev(),
+                        (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.jump_next(),
+                        (KeyCode::Char(ch), _) => app.jump_push(ch),
+                        _ => {}
+                    }
+                    needs_redraw = true;
                 } else if app.wh_picker.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -383,6 +396,11 @@ async fn run(
                         (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.hist_search_start(),
                         (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                             edit_sql_in_editor(terminal, app)?;
+                        }
+                        // Esc cancels a running statement server-side;
+                        // when idle it closes the console.
+                        (KeyCode::Esc, _) if app.sql.as_ref().is_some_and(|c| c.running) => {
+                            app.sql_cancel(&cli)
                         }
                         (KeyCode::Esc, _) => app.close_sql(),
                         (KeyCode::Enter, _) => app.sql_run(&cli),
@@ -463,6 +481,10 @@ async fn run(
                             app.run_toggle_raw();
                             needs_redraw = true;
                         }
+                        (KeyCode::Char('s'), _) => {
+                            app.request_run_cancel();
+                            needs_redraw = true;
+                        }
                         _ => {}
                     }
                 } else if app.detail.is_some() {
@@ -517,6 +539,10 @@ async fn run(
                         }
                         (KeyCode::Char('!'), _) => {
                             app.open_problems();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                            app.open_jump();
                             needs_redraw = true;
                         }
                         (KeyCode::Char(':'), _) => {

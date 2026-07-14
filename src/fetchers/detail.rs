@@ -4,7 +4,13 @@ use serde_json::Value;
 
 /// Fetches the full detail view for one resource: key facts, recent
 /// activity, and the raw JSON. Never fails — errors land in `raw`.
-pub async fn fetch(cli: &DatabricksCli, group: &str, id: &str) -> DetailData {
+/// For tables, a remembered `warehouse` adds DESCRIBE DETAIL facts.
+pub async fn fetch(
+    cli: &DatabricksCli,
+    group: &str,
+    id: &str,
+    warehouse: Option<&str>,
+) -> DetailData {
     // The activity call is independent of `get` — run them concurrently.
     let verb = if group == "volumes" { "read" } else { "get" };
     let get_args = [group, verb, id];
@@ -40,7 +46,11 @@ pub async fn fetch(cli: &DatabricksCli, group: &str, id: &str) -> DetailData {
         }
         "tables" => {
             activity = table_columns(&json);
-            table_summary(&json)
+            let mut s = table_summary(&json);
+            if let Some(wh) = warehouse {
+                s.extend(describe_detail(cli, id, wh).await);
+            }
+            s
         }
         "volumes" => volume_summary(&json),
         _ => warehouse_summary(&json),
@@ -50,6 +60,56 @@ pub async fn fetch(cli: &DatabricksCli, group: &str, id: &str) -> DetailData {
         summary,
         activity,
         raw,
+    }
+}
+
+/// Physical facts from DESCRIBE DETAIL: size, files, format, freshness.
+/// Best-effort — empty when the warehouse can't run it.
+async fn describe_detail(
+    cli: &DatabricksCli,
+    full_name: &str,
+    warehouse: &str,
+) -> Vec<(String, String)> {
+    let quoted = full_name
+        .split('.')
+        .map(|p| format!("`{p}`"))
+        .collect::<Vec<_>>()
+        .join(".");
+    let sql = format!("DESCRIBE DETAIL {quoted}");
+    let Ok(table) = crate::fetchers::preview::run_sql(cli, &sql, warehouse).await else {
+        return Vec::new();
+    };
+    let Some(row) = table.rows.first() else {
+        return Vec::new();
+    };
+    let col = |name: &str| -> Option<&String> {
+        table
+            .headers
+            .iter()
+            .position(|h| h == name)
+            .and_then(|i| row.get(i))
+    };
+    let mut out = Vec::new();
+    push(&mut out, "Format", col("format").cloned());
+    if let Some(bytes) = col("sizeInBytes").and_then(|v| v.parse::<u64>().ok()) {
+        out.push(("Size".to_string(), fmt_bytes(bytes)));
+    }
+    push(&mut out, "Files", col("numFiles").cloned());
+    push(&mut out, "Last modified", col("lastModified").cloned());
+    if let Some(parts) = col("partitionColumns") {
+        if parts != "[]" && !parts.is_empty() && parts != "␀" {
+            out.push(("Partitioned by".to_string(), parts.clone()));
+        }
+    }
+    out
+}
+
+fn fmt_bytes(bytes: u64) -> String {
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{:.1} KB", bytes as f64 / 1024.0),
+        1_048_576..=1_073_741_823 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.2} GB", bytes as f64 / 1_073_741_824.0),
     }
 }
 

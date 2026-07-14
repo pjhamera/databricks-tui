@@ -31,7 +31,14 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   Ctrl+R searches them incrementally, Ctrl+X composes multi-line SQL in
   your $EDITOR, and Ctrl+S exports results to CSV — previews export with `e`
 - Problems view (`!`): everything currently failing across all panes in
-  one list, with Enter jumping straight to the culprit
+  one list, with Enter jumping straight to the culprit — and when a new
+  failure appears between refreshes, the footer flashes it (with a
+  terminal bell) the moment it happens
+- Command palette (`Ctrl+P`): fuzzy-search every loaded resource across
+  panes and jump straight to it
+- Cancel from where you stand: `s` in a run/update view cancels it, and
+  Esc on a running SQL statement cancels it server-side instead of
+  leaving it burning the warehouse
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
@@ -47,8 +54,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Browse Lakeview dashboards: pages, widgets and datasets at a glance
 - Unity Catalog browser: drill from catalogs into schemas, tables, views and
   volumes — and into the volumes themselves, browsing files and directories
-  with sizes and ages; table details include the full column schema, and
-  `p` previews sample rows in a terminal table (SELECT … LIMIT 50)
+  with sizes and ages, with Enter showing the head of any text file; table
+  details include the full column schema plus size, file count, format and
+  last-modified from DESCRIBE DETAIL, and `p` previews sample rows
 - Switch between workspaces (CLI profiles) without restarting
 - Zoom into any pane, non-blocking refresh — the UI never freezes
 - Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
@@ -128,6 +136,8 @@ them can be slow on busy workspaces.
 | `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
 | `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Ctrl+S` export CSV |
 | `!` | Problems: everything failing across panes; `Enter` jumps to the item |
+| `Ctrl+P` | Command palette: fuzzy-search everything loaded, `Enter` jumps to it |
+| `s` (run view) | Cancel the shown run / stop the pipeline update |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse); `e` exports CSV |
 | `L` | Lineage: upstream/downstream tables for the selected table/view |

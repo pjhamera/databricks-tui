@@ -67,6 +67,17 @@ pub async fn run_sql(
     sql: &str,
     warehouse_id: &str,
 ) -> Result<TableData, String> {
+    run_sql_tracked(cli, sql, warehouse_id, None).await
+}
+
+/// Like `run_sql`, but publishes the statement id into `handle` once
+/// submitted so the caller can cancel it server-side.
+pub async fn run_sql_tracked(
+    cli: &DatabricksCli,
+    sql: &str,
+    warehouse_id: &str,
+    handle: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+) -> Result<TableData, String> {
     let payload = serde_json::json!({
         "statement": sql,
         "warehouse_id": warehouse_id,
@@ -89,9 +100,15 @@ pub async fn run_sql(
         .as_str()
         .unwrap_or_default()
         .to_string();
+    if let Some(h) = &handle {
+        if let Ok(mut slot) = h.lock() {
+            *slot = Some(id.clone());
+        }
+    }
     for _ in 0..45 {
         match state_of(&resp) {
             "SUCCEEDED" => break,
+            "CANCELED" => return Err("statement canceled".to_string()),
             "PENDING" | "RUNNING" => {
                 tokio::time::sleep(Duration::from_secs(4)).await;
                 let path = format!("/api/2.0/sql/statements/{id}");

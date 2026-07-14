@@ -271,6 +271,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.problems.is_some() {
             draw_problems(f, root[1], app, &p);
         }
+        if app.jump.is_some() {
+            draw_jump(f, root[1], app, &p);
+        }
         return;
     }
 
@@ -328,6 +331,77 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.problems.is_some() {
         draw_problems(f, root[1], app, &p);
     }
+    if app.jump.is_some() {
+        draw_jump(f, root[1], app, &p);
+    }
+}
+
+fn draw_jump(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(jump) = &app.jump else {
+        return;
+    };
+    let matches = app.jump_matches();
+    let width = 70.min(area.width.saturating_sub(4));
+    let height = (matches.len() as u16 + 5).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + 2.min(area.height.saturating_sub(height)),
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ⌕ ", Style::default().fg(p.key)),
+            Span::styled(
+                "Jump to ",
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(p.key).add_modifier(Modifier::BOLD))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("❯ ", Style::default().fg(p.key)),
+            Span::styled(jump.query.as_str(), Style::default().fg(p.text)),
+            Span::styled("▏", Style::default().fg(p.warn)),
+        ])),
+        parts[0],
+    );
+
+    if matches.is_empty() {
+        f.render_widget(
+            Paragraph::new("∅ nothing matches").style(Style::default().fg(p.dim)),
+            parts[1],
+        );
+        return;
+    }
+    let items: Vec<ListItem> = matches
+        .iter()
+        .map(|(panel_idx, name, label)| {
+            let panel = Panel::ALL[*panel_idx];
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", panel.icon()),
+                    Style::default().fg(accent(panel, p)),
+                ),
+                Span::styled(format!("{name}  "), Style::default().fg(p.text)),
+                Span::styled(label.clone(), Style::default().fg(p.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(jump.index));
+    f.render_stateful_widget(list, parts[1], &mut state);
 }
 
 fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -1333,7 +1407,19 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let mut spans = if app.problems.is_some() {
+    let mut spans = if app.jump.is_some() {
+        vec![
+            dim(" type to search everything   "),
+            key("\u{2191}"),
+            dim("/"),
+            key("\u{2193}"),
+            dim(" select   "),
+            key("enter"),
+            dim(" jump   "),
+            key("esc"),
+            dim(" close"),
+        ]
+    } else if app.problems.is_some() {
         vec![
             dim(" "),
             key("j"),
@@ -1396,7 +1482,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 key("^s"),
                 dim(" export   "),
                 key("esc"),
-                dim(" close"),
+                dim(if app.sql.as_ref().is_some_and(|c| c.running) {
+                    " cancel query"
+                } else {
+                    " close"
+                }),
             ]
         }
     } else if app.preview.is_some() {
@@ -1434,6 +1524,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim("/"),
             key("l"),
             dim(" older/newer   "),
+            key("s"),
+            dim(" cancel   "),
             key("j"),
             dim("/"),
             key("k"),

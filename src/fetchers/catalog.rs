@@ -32,6 +32,50 @@ fn entry(v: &Value, kind: &str) -> ListItem {
     }
 }
 
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt", "csv", "tsv", "json", "jsonl", "ndjson", "md", "log", "yaml", "yml", "xml", "sql", "py",
+    "sh", "conf", "ini", "toml", "html",
+];
+
+/// Shows the head of a text-ish file inside a volume via `fs cat`.
+pub async fn file_peek(cli: &DatabricksCli, path: &str) -> crate::shape::DetailData {
+    let textish = path
+        .rsplit('.')
+        .next()
+        .is_some_and(|ext| TEXT_EXTENSIONS.contains(&ext.to_lowercase().as_str()));
+    let raw = if !textish {
+        format!(
+            "{path}\n\nno preview for this file type — download it with:\n  databricks fs cp {path} ."
+        )
+    } else {
+        match cli.run_raw(&["fs", "cat", path]).await {
+            Ok(content) => {
+                let total_lines = content.lines().count();
+                let head: String = content
+                    .lines()
+                    .take(200)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .chars()
+                    .take(64 * 1024)
+                    .collect();
+                let note = if total_lines > 200 {
+                    format!("\n\n… first 200 of {total_lines} lines")
+                } else {
+                    String::new()
+                };
+                format!("{path}\n\n{head}{note}")
+            }
+            Err(e) => format!("{path}\n\n✗ {e:#}"),
+        }
+    };
+    crate::shape::DetailData {
+        summary: Vec::new(),
+        activity: Vec::new(),
+        raw,
+    }
+}
+
 fn fmt_size(bytes: u64) -> String {
     match bytes {
         0..=1023 => format!("{bytes} B"),
@@ -83,7 +127,12 @@ pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
                         name,
                         status: Status::Unknown(if is_dir { "DIR" } else { "FILE" }.to_string()),
                         detail,
-                        id: None,
+                        // Full dbfs path — lets the detail view `fs cat` it.
+                        id: if is_dir {
+                            None
+                        } else {
+                            f["path"].as_str().map(str::to_string)
+                        },
                         history: Vec::new(),
                     }
                 })

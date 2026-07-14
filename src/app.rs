@@ -214,6 +214,12 @@ fn save_history(history: &[String]) {
     crate::config::restrict(&path, 0o600);
 }
 
+/// True when every char of `needle` appears in `haystack` in order.
+fn subsequence(haystack: &str, needle: &str) -> bool {
+    let mut chars = haystack.chars();
+    needle.chars().all(|n| chars.any(|h| h == n))
+}
+
 /// Byte offset of the `cursor`th character in `input`.
 fn byte_at(input: &str, cursor: usize) -> usize {
     input
@@ -354,6 +360,19 @@ pub struct App {
     pub filter_entry: bool,
     /// Persisted preferences (theme, warehouse per profile).
     pub config: crate::config::Config,
+    /// Failed item names per pane at the last refresh — None until the
+    /// pane has loaded once, so the first load never alerts.
+    failed_seen: [Option<std::collections::HashSet<String>>; 6],
+    /// Ctrl+P fuzzy jump overlay.
+    pub jump: Option<Jump>,
+    /// Statement id of the in-flight console query, for cancellation.
+    sql_stmt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+}
+
+/// Ctrl+P overlay: fuzzy-search everything loaded, Enter jumps to it.
+pub struct Jump {
+    pub query: String,
+    pub index: usize,
 }
 
 impl App {
@@ -407,7 +426,52 @@ impl App {
             filters: Default::default(),
             filter_entry: false,
             config: crate::config::Config::load(),
+            failed_seen: Default::default(),
+            jump: None,
+            sql_stmt: None,
         }
+    }
+
+    /// Flashes (and rings the bell) when a resource fails between one
+    /// refresh and the next.
+    fn alert_new_failures(&mut self, idx: usize) {
+        // Catalog "error rows" are listing problems, not runtime failures.
+        if idx == 5 {
+            return;
+        }
+        let Some(Shape::List(items)) = &self.shapes[idx] else {
+            return;
+        };
+        let failed: std::collections::HashSet<String> = items
+            .iter()
+            .filter(|it| {
+                matches!(it.status, Status::Failed)
+                    || it
+                        .history
+                        .last()
+                        .is_some_and(|s| matches!(s, Status::Failed))
+            })
+            .map(|it| it.name.clone())
+            .collect();
+        if let Some(prev) = &self.failed_seen[idx] {
+            let mut newly: Vec<&String> = failed.difference(prev).collect();
+            if !newly.is_empty() {
+                newly.sort();
+                let extra = if newly.len() > 1 {
+                    format!(" (+{} more)", newly.len() - 1)
+                } else {
+                    String::new()
+                };
+                self.flash = Some((
+                    format!("✗ {}{extra} just failed — ! to inspect", newly[0]),
+                    Instant::now(),
+                ));
+                // Bell so a backgrounded terminal (or tmux) flags it too.
+                print!("\x07");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+        }
+        self.failed_seen[idx] = Some(failed);
     }
 
     /// Remembers the current theme across sessions.
@@ -503,9 +567,97 @@ impl App {
         self.zoomed = false;
         self.filters = Default::default();
         self.filter_entry = false;
+        self.failed_seen = Default::default();
+        self.jump = None;
+        self.sql_stmt = None;
         self.restore_warehouse_pref();
 
         Some(Arc::new(DatabricksCli::new(profile_arg)))
+    }
+
+    pub fn open_jump(&mut self) {
+        self.jump = Some(Jump {
+            query: String::new(),
+            index: 0,
+        });
+    }
+
+    /// Everything loaded that matches the jump query, best first:
+    /// (panel index, item name, kind/status label). Substring matches
+    /// rank above in-order subsequence matches.
+    pub fn jump_matches(&self) -> Vec<(usize, String, String)> {
+        let Some(jump) = &self.jump else {
+            return Vec::new();
+        };
+        let q = jump.query.to_lowercase();
+        let mut scored: Vec<(u8, usize, String, String)> = Vec::new();
+        for (i, shape) in self.shapes.iter().enumerate() {
+            let Some(Shape::List(items)) = shape else {
+                continue;
+            };
+            for it in items {
+                let name = it.name.to_lowercase();
+                let rank = if q.is_empty() || name.contains(&q) {
+                    0
+                } else if subsequence(&name, &q) {
+                    1
+                } else {
+                    continue;
+                };
+                scored.push((rank, i, it.name.clone(), it.status.label().to_string()));
+            }
+        }
+        scored.sort_by(|a, b| (a.0, a.2.len(), &a.2).cmp(&(b.0, b.2.len(), &b.2)));
+        scored
+            .into_iter()
+            .take(12)
+            .map(|(_, i, name, label)| (i, name, label))
+            .collect()
+    }
+
+    pub fn jump_push(&mut self, c: char) {
+        if let Some(j) = &mut self.jump {
+            j.query.push(c);
+            j.index = 0;
+        }
+    }
+
+    pub fn jump_pop(&mut self) {
+        if let Some(j) = &mut self.jump {
+            j.query.pop();
+            j.index = 0;
+        }
+    }
+
+    pub fn jump_next(&mut self) {
+        let len = self.jump_matches().len();
+        if let Some(j) = &mut self.jump {
+            j.index = (j.index + 1).min(len.saturating_sub(1));
+        }
+    }
+
+    pub fn jump_prev(&mut self) {
+        if let Some(j) = &mut self.jump {
+            j.index = j.index.saturating_sub(1);
+        }
+    }
+
+    /// Jumps focus and selection to the highlighted match.
+    pub fn jump_go(&mut self) {
+        let matches = self.jump_matches();
+        let Some(jump) = self.jump.take() else {
+            return;
+        };
+        let Some((panel_idx, name, _)) = matches.get(jump.index) else {
+            return;
+        };
+        self.focus = Panel::ALL[*panel_idx];
+        self.filters[*panel_idx].clear();
+        if let Some(Shape::List(items)) = &self.shapes[*panel_idx] {
+            if let Some(pos) = items.iter().position(|i| &i.name == name) {
+                self.selected[*panel_idx] = pos;
+            }
+        }
     }
 
     /// Collects everything unhealthy across the loaded panes: items whose
@@ -718,12 +870,30 @@ impl App {
         let (tx, rx) = oneshot::channel();
         self.detail_rx = Some(rx);
         let cli = Arc::clone(cli);
-        let group = match &self.detail.as_ref().unwrap().kind {
+        let kind = self.detail.as_ref().unwrap().kind.clone();
+        // Files in volumes get a content peek instead of an API `get`.
+        if kind.as_deref() == Some("FILE") {
+            if let Some(d) = &mut self.detail {
+                d.section = "File head";
+            }
+            tokio::spawn(async move {
+                let data = fetchers::catalog::file_peek(&cli, &id).await;
+                let _ = tx.send(data);
+            });
+            return;
+        }
+        let group = match &kind {
             Some(k) if k == "VOLUME" => "volumes",
             _ => self.focus.cli_group(),
         };
+        // Tables get extra facts from DESCRIBE DETAIL when a warehouse
+        // is already remembered — free depth, no picker interruption.
+        let warehouse = match &kind {
+            Some(k) if k == "TABLE" => self.preview_warehouse.clone().map(|(id, _)| id),
+            _ => None,
+        };
         tokio::spawn(async move {
-            let data = fetchers::detail::fetch(&cli, group, &id).await;
+            let data = fetchers::detail::fetch(&cli, group, &id, warehouse.as_deref()).await;
             let _ = tx.send(data);
         });
     }
@@ -1251,11 +1421,14 @@ impl App {
             console.scroll = 0;
             console.last_sql = query.clone();
         }
+        // Published by the task once submitted, so Esc can cancel it.
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        self.sql_stmt = Some(std::sync::Arc::clone(&handle));
         let (tx, rx) = oneshot::channel();
         self.sql_rx = Some(rx);
         let cli = Arc::clone(cli);
         tokio::spawn(async move {
-            let result = fetchers::preview::run_sql(&cli, &query, &id).await;
+            let result = fetchers::preview::run_sql_tracked(&cli, &query, &id, Some(handle)).await;
             let _ = tx.send(result);
         });
     }
@@ -1320,15 +1493,19 @@ impl App {
         };
         match rx.try_recv() {
             Ok(result) => {
-                // A warehouse that errors shouldn't stay the session default.
-                if result.is_err() {
-                    self.preview_warehouse = None;
+                // A warehouse that errors shouldn't stay the session
+                // default — but a user-canceled statement is not its fault.
+                if let Err(e) = &result {
+                    if e != "statement canceled" {
+                        self.preview_warehouse = None;
+                    }
                 }
                 if let Some(console) = &mut self.sql {
                     console.running = false;
                     console.data = Some(result);
                 }
                 self.sql_rx = None;
+                self.sql_stmt = None;
                 true
             }
             Err(oneshot::error::TryRecvError::Empty) => false,
@@ -1787,6 +1964,61 @@ impl App {
         });
     }
 
+    /// `s` in the run view: cancel the shown run/update after a confirm.
+    pub fn request_run_cancel(&mut self) {
+        let Some(rv) = &self.run_view else {
+            return;
+        };
+        if !rv.live {
+            self.flash = Some((
+                "✗ nothing to cancel — this run already finished".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        let Some((run_id, _, _)) = rv.runs.get(rv.idx) else {
+            return;
+        };
+        let (message, args) = if rv.panel == Panel::Jobs {
+            (
+                format!("Cancel run {run_id} of “{}”?", rv.owner_name),
+                vec!["jobs".to_string(), "cancel-run".to_string(), run_id.clone()],
+            )
+        } else {
+            (
+                format!("Stop “{}” (cancels the active update)?", rv.owner_name),
+                vec![
+                    "pipelines".to_string(),
+                    "stop".to_string(),
+                    rv.owner_id.clone(),
+                ],
+            )
+        };
+        self.confirm = Some(Confirm { message, args });
+    }
+
+    /// Cancels the in-flight console statement server-side; the polling
+    /// task then sees CANCELED and surfaces it in the results pane.
+    pub fn sql_cancel(&mut self, cli: &Arc<DatabricksCli>) {
+        let id = self
+            .sql_stmt
+            .as_ref()
+            .and_then(|h| h.lock().ok().and_then(|g| g.clone()));
+        let Some(id) = id else {
+            self.flash = Some((
+                "✗ statement not submitted yet — try again in a moment".to_string(),
+                Instant::now(),
+            ));
+            return;
+        };
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let path = format!("/api/2.0/sql/statements/{id}/cancel");
+            let _ = cli.run_action(&["api", "post", &path]).await;
+        });
+        self.flash = Some(("⏳ cancel requested".to_string(), Instant::now()));
+    }
+
     pub fn cancel_confirm(&mut self) {
         self.confirm = None;
     }
@@ -1997,6 +2229,7 @@ impl App {
             return false;
         };
         let mut changed = false;
+        let mut updated_panes: Vec<usize> = Vec::new();
         loop {
             match rx.try_recv() {
                 Ok(Update::Panel(i, result)) => {
@@ -2014,6 +2247,7 @@ impl App {
                             }
                             self.shapes[i] = Some(shape);
                             self.updated_at[i] = Some(Instant::now());
+                            updated_panes.push(i);
                         }
                         // Keep previous data on failure so panels don't blank
                         // out — but surface the error if there's nothing yet.
@@ -2039,6 +2273,9 @@ impl App {
                     break;
                 }
             }
+        }
+        for i in updated_panes {
+            self.alert_new_failures(i);
         }
         if self.in_flight == 0 {
             self.loading = false;
