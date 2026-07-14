@@ -88,12 +88,14 @@ fn spenders_query(priced: bool, ws: &str) -> String {
     } else {
         ""
     };
+    // With prices, rank by dollars; DBUs are only a proxy without them.
+    let order = if priced { "4" } else { "3" };
     format!(
         "SELECT {SPENDER_KIND} AS kind, {SPENDER_ID} AS id, \
          ROUND(SUM(u.usage_quantity), 2) AS dbus{usd} \
          FROM system.billing.usage u {join}\
          WHERE u.usage_date >= date_sub(current_date(), 13){ws} \
-         GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10"
+         GROUP BY 1, 2 ORDER BY {order} DESC LIMIT 10"
     )
 }
 
@@ -219,6 +221,13 @@ pub async fn fetch(
     // Spenders are a bonus — a failure here shouldn't sink the whole view.
     if let Ok(table) = run_sql(cli, &spenders_query(data.priced, &ws), warehouse_id).await {
         data.spenders = parse_spenders(&table);
+        if data.priced {
+            data.spenders.sort_by(|a, b| {
+                b.usd
+                    .partial_cmp(&a.usd)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
     }
     Ok(data)
 }

@@ -776,7 +776,7 @@ fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                         _ => p.dim,
                     };
                     let amount = if data.priced {
-                        format!("{:>8.1} DBU · ${:.2}", s.dbus, s.usd)
+                        format!("{:>9} · {:.1} DBU", format!("${:.2}", s.usd), s.dbus)
                     } else {
                         format!("{:>8.1} DBU", s.dbus)
                     };
