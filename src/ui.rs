@@ -1316,13 +1316,6 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    if let Some((msg, _)) = &app.flash {
-        let color = if msg.starts_with('✗') { p.err } else { p.ok };
-        let line = Line::from(Span::styled(format!(" {msg}"), Style::default().fg(color)));
-        f.render_widget(Paragraph::new(line), area);
-        return;
-    }
-
     if app.filter_entry {
         let line = Line::from(vec![
             Span::styled(
@@ -1340,7 +1333,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
-    let spans = if app.problems.is_some() {
+    let mut spans = if app.problems.is_some() {
         vec![
             dim(" "),
             key("j"),
@@ -1553,6 +1546,19 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         ]);
         spans
     };
+    // A flash message prefixes the key hints instead of hiding them.
+    if let Some((msg, _)) = &app.flash {
+        let color = if msg.starts_with('✗') { p.err } else { p.ok };
+        let mut prefixed = vec![
+            Span::styled(
+                format!(" {msg}"),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            dim("  ·  "),
+        ];
+        prefixed.append(&mut spans);
+        spans = prefixed;
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
