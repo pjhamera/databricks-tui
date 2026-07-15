@@ -2,7 +2,14 @@ use crate::cli::DatabricksCli;
 use crate::shape::{relative_time, ListItem, Shape, Status};
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+/// Max concurrent per-job run queries — keeps the number of `databricks`
+/// subprocesses in flight bounded on large workspaces.
+const CONCURRENCY: usize = 8;
+/// Recent runs to pull per job: latest result + a short history strip.
+const RUNS_PER_JOB: &str = "5";
 
 /// Status of a single run, preferring the final result over the lifecycle state.
 pub(crate) fn run_status(r: &Value) -> Status {
@@ -15,63 +22,80 @@ pub(crate) fn run_status(r: &Value) -> Status {
         .unwrap()
 }
 
-pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
-    // Jobs alone carry no health signal — join them with recent runs so each
-    // job shows its latest result and a short run history.
-    let (jobs, runs) = tokio::join!(
-        cli.run(&["jobs", "list"]),
-        cli.run(&["jobs", "list-runs", "--limit", "25"]),
-    );
-    let jobs = jobs?;
-    let runs = runs.unwrap_or(Value::Null);
+/// `jobs list-runs --output json` unwraps to a bare array; tolerate the
+/// wrapped `{"runs":[...]}` shape too.
+fn runs_of(json: &Value) -> Vec<Value> {
+    json.as_array()
+        .cloned()
+        .or_else(|| json["runs"].as_array().cloned())
+        .unwrap_or_default()
+}
 
-    // list-runs is newest-first; group per job preserving that order.
-    let mut runs_by_job: HashMap<u64, Vec<&Value>> = HashMap::new();
-    if let Some(arr) = runs.as_array() {
-        for r in arr {
-            if let Some(job_id) = r["job_id"].as_u64() {
-                runs_by_job.entry(job_id).or_default().push(r);
+pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
+    let jobs = cli.run(&["jobs", "list"]).await?;
+    let Some(jobs) = jobs.as_array() else {
+        return Ok(Shape::List(Vec::new()));
+    };
+
+    // A single global list-runs only returns the newest ~25 runs across
+    // the whole workspace, so jobs whose latest run isn't in that window
+    // wrongly show "NO RUNS". Fetch each job's own recent runs instead,
+    // with bounded concurrency.
+    let sem = Arc::new(Semaphore::new(CONCURRENCY));
+    let mut tasks = Vec::with_capacity(jobs.len());
+    for j in jobs {
+        let job_id = j["job_id"].as_u64();
+        let name = j["settings"]["name"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        let cli = cli.clone();
+        let sem = Arc::clone(&sem);
+        tasks.push(tokio::spawn(async move {
+            let mut runs: Vec<Value> = Vec::new();
+            if let Some(id) = job_id {
+                let _permit = sem.acquire().await;
+                let id = id.to_string();
+                let args = [
+                    "jobs",
+                    "list-runs",
+                    "--job-id",
+                    &id,
+                    "--limit",
+                    RUNS_PER_JOB,
+                ];
+                if let Ok(json) = cli.run(&args).await {
+                    runs = runs_of(&json);
+                }
             }
-        }
+            build_item(name, job_id, &runs)
+        }));
     }
 
-    let items = jobs
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .map(|j| {
-                    let job_id = j["job_id"].as_u64();
-                    let job_runs = job_id
-                        .and_then(|id| runs_by_job.get(&id))
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[]);
-                    let status = job_runs
-                        .first()
-                        .map(|r| run_status(r))
-                        .unwrap_or(Status::Unknown("NO RUNS".to_string()));
-                    let history: Vec<Status> = job_runs
-                        .iter()
-                        .take(5)
-                        .rev()
-                        .map(|r| run_status(r))
-                        .collect();
-                    let detail = job_runs
-                        .first()
-                        .and_then(|r| r["start_time"].as_u64())
-                        .map(relative_time);
-                    ListItem {
-                        name: j["settings"]["name"]
-                            .as_str()
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        status,
-                        detail,
-                        id: job_id.map(|id| id.to_string()),
-                        history,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut items = Vec::with_capacity(tasks.len());
+    for t in tasks {
+        if let Ok(item) = t.await {
+            items.push(item);
+        }
+    }
     Ok(Shape::List(items))
+}
+
+fn build_item(name: String, job_id: Option<u64>, runs: &[Value]) -> ListItem {
+    let status = runs
+        .first()
+        .map(run_status)
+        .unwrap_or(Status::Unknown("NO RUNS".to_string()));
+    let history: Vec<Status> = runs.iter().take(5).rev().map(run_status).collect();
+    let detail = runs
+        .first()
+        .and_then(|r| r["start_time"].as_u64())
+        .map(relative_time);
+    ListItem {
+        name,
+        status,
+        detail,
+        id: job_id.map(|id| id.to_string()),
+        history,
+    }
 }

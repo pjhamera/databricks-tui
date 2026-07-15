@@ -23,6 +23,7 @@ pub fn list_profiles() -> Vec<String> {
         .collect()
 }
 
+#[derive(Clone)]
 pub struct DatabricksCli {
     profile: Option<String>,
 }
