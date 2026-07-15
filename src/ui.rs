@@ -1905,13 +1905,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             } else {
                 " filter · esc clears   "
             }),
-            key("enter"),
-            dim(if app.focus == Panel::Catalog && app.uc_path.len() < 2 {
-                " open   "
-            } else {
-                " details   "
-            }),
         ];
+        // Enter means different things per pane — and nothing on a secret key.
+        let enter_label = match app.focus {
+            Panel::Secrets if app.secret_scope.is_some() => None,
+            Panel::Secrets => Some(" open scope   "),
+            Panel::Catalog if app.uc_path.len() < 2 => Some(" open   "),
+            _ => Some(" details   "),
+        };
+        if let Some(label) = enter_label {
+            spans.push(key("enter"));
+            spans.push(dim(label));
+        }
         // Only show keys that do something in the focused pane.
         match app.focus {
             Panel::Catalog => {

@@ -1125,10 +1125,16 @@ impl App {
         });
     }
 
-    /// Enter on a secret scope: descend into its keys.
+    /// Enter in the Secrets pane: descend from a scope into its keys.
+    /// On a key it does nothing — secret values are never displayed —
+    /// but still returns true so Enter never opens a (bogus) detail view.
     pub fn secrets_drill(&mut self, cli: &Arc<DatabricksCli>) -> bool {
-        if self.focus != Panel::Secrets || self.secret_scope.is_some() {
+        if self.focus != Panel::Secrets {
             return false;
+        }
+        // Already inside a scope: the selection is a key, nothing to open.
+        if self.secret_scope.is_some() {
+            return true;
         }
         let Some(item) = self.selected_item() else {
             return true; // empty pane: swallow the key
