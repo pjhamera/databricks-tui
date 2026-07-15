@@ -1334,23 +1334,25 @@ impl App {
                 Ok(json) => {
                     let raw =
                         serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
-                    let activity: Vec<(Status, String)> = json["items"]
+                    // The CLI unwraps to a bare array; REST wraps in "items".
+                    let acls = json
                         .as_array()
-                        .map(|acls| {
-                            acls.iter()
-                                .map(|a| {
-                                    let principal = a["principal"].as_str().unwrap_or("?");
-                                    let perm = a["permission"].as_str().unwrap_or("?");
-                                    let status = if perm == "MANAGE" {
-                                        Status::Success
-                                    } else {
-                                        Status::Unknown(String::new())
-                                    };
-                                    (status, format!("{principal}  ·  {perm}"))
-                                })
-                                .collect()
-                        })
+                        .cloned()
+                        .or_else(|| json["items"].as_array().cloned())
                         .unwrap_or_default();
+                    let activity: Vec<(Status, String)> = acls
+                        .iter()
+                        .map(|a| {
+                            let principal = a["principal"].as_str().unwrap_or("?");
+                            let perm = a["permission"].as_str().unwrap_or("?");
+                            let status = if perm == "MANAGE" {
+                                Status::Success
+                            } else {
+                                Status::Unknown(String::new())
+                            };
+                            (status, format!("{principal}  ·  {perm}"))
+                        })
+                        .collect();
                     DetailData {
                         summary: vec![("Scope".to_string(), scope.clone())],
                         activity,
