@@ -104,35 +104,50 @@ pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
             items_of(&cli.run(&args).await?)
                 .iter()
                 .map(|f| {
-                    let name = f["path"]
+                    // `fs ls --output json` gives basename `name`, `is_directory`,
+                    // `size`, and `last_modified` (ISO 8601) — no `path`. Older
+                    // shapes used is_dir/file_size/modification_time; accept both.
+                    let name = f["name"]
                         .as_str()
-                        .and_then(|p| p.trim_end_matches('/').rsplit('/').next())
-                        .or_else(|| f["name"].as_str())
+                        .or_else(|| f["path"].as_str())
                         .unwrap_or("?")
                         .trim_end_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("?")
                         .to_string();
-                    let is_dir = f["is_dir"].as_bool().unwrap_or(false);
+                    let is_dir = f["is_directory"]
+                        .as_bool()
+                        .or_else(|| f["is_dir"].as_bool())
+                        .unwrap_or(false);
                     let detail = if is_dir {
                         None
                     } else {
-                        let size = f["file_size"].as_u64().map(fmt_size).unwrap_or_default();
-                        let age = f["modification_time"]
+                        let size = f["size"]
                             .as_u64()
-                            .filter(|t| *t > 0)
-                            .map(crate::shape::relative_time)
+                            .or_else(|| f["file_size"].as_u64())
+                            .map(fmt_size)
                             .unwrap_or_default();
-                        Some(format!("{size}  {age}").trim().to_string())
+                        // last_modified is an ISO string; show its date part.
+                        let when = f["last_modified"]
+                            .as_str()
+                            .filter(|s| !s.starts_with("1970"))
+                            .map(|s| s.chars().take(10).collect::<String>())
+                            .or_else(|| {
+                                f["modification_time"]
+                                    .as_u64()
+                                    .filter(|t| *t > 0)
+                                    .map(crate::shape::relative_time)
+                            })
+                            .unwrap_or_default();
+                        Some(format!("{size}  {when}").trim().to_string())
                     };
                     ListItem {
-                        name,
+                        // Reconstruct the full path — the detail view `fs cat`s it.
+                        id: (!is_dir).then(|| format!("{vol_path}/{name}")),
                         status: Status::Unknown(if is_dir { "DIR" } else { "FILE" }.to_string()),
                         detail,
-                        // Full dbfs path — lets the detail view `fs cat` it.
-                        id: if is_dir {
-                            None
-                        } else {
-                            f["path"].as_str().map(str::to_string)
-                        },
+                        name,
                         history: Vec::new(),
                     }
                 })
