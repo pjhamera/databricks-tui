@@ -163,7 +163,31 @@ pub struct Preview {
     pub warehouse_id: String,
     /// None while the query runs; then rows or an error.
     pub data: Option<Result<crate::shape::TableData, String>>,
+    /// Top visible row in the grid; the inspected row in record view.
     pub scroll: usize,
+    /// First visible column, as an index into the filtered column list.
+    pub col: usize,
+    /// Case-insensitive substring filter over column names — the way
+    /// through a 500-column table.
+    pub filter: String,
+    pub filter_entry: bool,
+    /// Transposed view: one row, fields stacked vertically.
+    pub record: bool,
+    /// Field scroll within the record view.
+    pub rscroll: u16,
+}
+
+impl Preview {
+    /// Indices of columns whose name matches the filter (all when empty).
+    pub fn visible_cols(&self) -> Vec<usize> {
+        let Some(Ok(t)) = &self.data else {
+            return Vec::new();
+        };
+        let q = self.filter.to_lowercase();
+        (0..t.headers.len())
+            .filter(|&i| q.is_empty() || t.headers[i].to_lowercase().contains(&q))
+            .collect()
+    }
 }
 
 /// What a confirmed warehouse choice should run.
@@ -186,6 +210,8 @@ pub struct SqlConsole {
     /// The statement that produced `data`.
     pub last_sql: String,
     pub scroll: usize,
+    /// First visible result column (shift+←/→ pages wide results).
+    pub col: usize,
 }
 
 /// Where console history lives; one statement per line, oldest first.
@@ -276,6 +302,9 @@ pub struct RunView {
     pub scroll: u16,
     /// True while the shown run is still executing — drives auto-refresh.
     pub live: bool,
+    /// Full per-task output/logs, fetched on demand via `o`.
+    pub output: Option<String>,
+    pub show_output: bool,
     fetched_at: Instant,
 }
 
@@ -285,6 +314,7 @@ type RunOpened = (Vec<(String, Status, String)>, DetailData, bool);
 enum RunUpdate {
     Opened(Result<RunOpened, String>),
     Detail(DetailData, bool),
+    Output(String),
 }
 
 /// One unhealthy resource, pointing back at its pane and item.
@@ -1602,6 +1632,7 @@ impl App {
                 data: None,
                 last_sql: String::new(),
                 scroll: 0,
+                col: 0,
             });
         }
     }
@@ -1791,6 +1822,21 @@ impl App {
         }
     }
 
+    /// Shift+←/→ in the console: page result columns.
+    pub fn sql_cols(&mut self, delta: i32) {
+        if let Some(console) = &mut self.sql {
+            let n = match &console.data {
+                Some(Ok(t)) => t.headers.len(),
+                _ => 0,
+            };
+            console.col = if delta < 0 {
+                console.col.saturating_sub(1)
+            } else {
+                (console.col + 1).min(n.saturating_sub(1))
+            };
+        }
+    }
+
     /// Runs the typed statement, resolving a warehouse like previews do.
     pub fn sql_run(&mut self, cli: &Arc<DatabricksCli>) {
         let Some(console) = &self.sql else {
@@ -1901,6 +1947,82 @@ impl App {
         }
     }
 
+    /// ←/→ in a preview: page columns in the grid, switch rows in
+    /// record view.
+    pub fn preview_h(&mut self, delta: i32) {
+        let Some(pv) = &mut self.preview else {
+            return;
+        };
+        if pv.record {
+            let max = match &pv.data {
+                Some(Ok(t)) => t.rows.len().saturating_sub(1),
+                _ => 0,
+            };
+            pv.scroll = if delta < 0 {
+                pv.scroll.saturating_sub(1)
+            } else {
+                (pv.scroll + 1).min(max)
+            };
+            pv.rscroll = 0;
+        } else {
+            let cols = pv.visible_cols().len();
+            pv.col = if delta < 0 {
+                pv.col.saturating_sub(1)
+            } else {
+                (pv.col + 1).min(cols.saturating_sub(1))
+            };
+        }
+    }
+
+    /// `v`/enter in a preview: transposed view of the top visible row.
+    pub fn preview_toggle_record(&mut self) {
+        if let Some(pv) = &mut self.preview {
+            if matches!(&pv.data, Some(Ok(t)) if !t.rows.is_empty()) {
+                pv.record = !pv.record;
+                pv.rscroll = 0;
+            }
+        }
+    }
+
+    pub fn preview_filter_start(&mut self) {
+        if let Some(pv) = &mut self.preview {
+            pv.filter.clear();
+            pv.filter_entry = true;
+            pv.col = 0;
+            pv.rscroll = 0;
+        }
+    }
+
+    pub fn preview_filter_push(&mut self, c: char) {
+        if let Some(pv) = &mut self.preview {
+            pv.filter.push(c);
+            pv.col = 0;
+            pv.rscroll = 0;
+        }
+    }
+
+    pub fn preview_filter_pop(&mut self) {
+        if let Some(pv) = &mut self.preview {
+            pv.filter.pop();
+            pv.col = 0;
+        }
+    }
+
+    pub fn preview_filter_accept(&mut self) {
+        if let Some(pv) = &mut self.preview {
+            pv.filter_entry = false;
+        }
+    }
+
+    pub fn preview_filter_clear(&mut self) {
+        if let Some(pv) = &mut self.preview {
+            pv.filter.clear();
+            pv.filter_entry = false;
+            pv.col = 0;
+            pv.rscroll = 0;
+        }
+    }
+
     /// `e` in a table preview: export the sampled rows.
     pub fn preview_export(&mut self) {
         if let Some(Preview {
@@ -1930,6 +2052,7 @@ impl App {
                 if let Some(console) = &mut self.sql {
                     console.running = false;
                     console.data = Some(result);
+                    console.col = 0;
                 }
                 self.sql_rx = None;
                 self.sql_stmt = None;
@@ -2028,6 +2151,11 @@ impl App {
             warehouse_id: warehouse_id.clone(),
             data: None,
             scroll: 0,
+            col: 0,
+            filter: String::new(),
+            filter_entry: false,
+            record: false,
+            rscroll: 0,
         });
         let (tx, rx) = oneshot::channel();
         self.preview_rx = Some(rx);
@@ -2069,6 +2197,16 @@ impl App {
 
     pub fn preview_scroll(&mut self, delta: i32) {
         if let Some(pv) = &mut self.preview {
+            // Record view: j/k walk the fields, not the rows.
+            if pv.record {
+                let max = pv.visible_cols().len().saturating_sub(1) as u16;
+                pv.rscroll = if delta < 0 {
+                    pv.rscroll.saturating_sub(delta.unsigned_abs() as u16)
+                } else {
+                    pv.rscroll.saturating_add(delta as u16).min(max)
+                };
+                return;
+            }
             let max = match &pv.data {
                 Some(Ok(t)) => t.rows.len().saturating_sub(1),
                 _ => 0,
@@ -2171,6 +2309,8 @@ impl App {
             show_raw: false,
             scroll: 0,
             live: false,
+            output: None,
+            show_output: false,
             fetched_at: Instant::now(),
         });
         let (tx, rx) = oneshot::channel();
@@ -2226,6 +2366,8 @@ impl App {
         rv.data = None;
         rv.scroll = 0;
         rv.show_raw = false;
+        rv.output = None;
+        rv.show_output = false;
         let run_id = rv.runs[new].0.clone();
         self.start_run_fetch(cli, run_id);
     }
@@ -2245,6 +2387,91 @@ impl App {
                 fetchers::updates::fetch(&cli, &owner_id, &run_id).await
             };
             let _ = tx.send(RunUpdate::Detail(data, live));
+        });
+    }
+
+    /// `o` in the run view: toggles the full output/log view, fetching
+    /// all task outputs on first use.
+    pub fn run_toggle_output(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(rv) = &mut self.run_view else {
+            return;
+        };
+        if rv.panel != Panel::Jobs {
+            self.flash = Some((
+                "✗ output view is for job runs — pipeline events are already inline".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if rv.show_output {
+            rv.show_output = false;
+            rv.scroll = 0;
+            return;
+        }
+        if rv.output.is_none() && self.run_rx.is_some() {
+            self.flash = Some((
+                "⏳ run still loading — try again in a moment".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        rv.show_output = true;
+        rv.scroll = 0;
+        if rv.output.is_some() {
+            return;
+        }
+        let Some((run_id, _, _)) = rv.runs.get(rv.idx).cloned() else {
+            return;
+        };
+        let (tx, rx) = oneshot::channel();
+        self.run_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let text = fetchers::runs::full_output(&cli, &run_id).await;
+            let _ = tx.send(RunUpdate::Output(text));
+        });
+    }
+
+    /// `r` in the run view: rerun only the failed tasks of the shown run.
+    pub fn request_run_repair(&mut self) {
+        let Some(rv) = &self.run_view else {
+            return;
+        };
+        if rv.panel != Panel::Jobs {
+            self.flash = Some((
+                "✗ repair applies to job runs only".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if rv.live {
+            self.flash = Some((
+                "✗ run is still executing — cancel it first (s)".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        let Some((run_id, status, _)) = rv.runs.get(rv.idx) else {
+            return;
+        };
+        if matches!(status, Status::Success) {
+            self.flash = Some((
+                "✗ run succeeded — nothing to repair".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        self.confirm = Some(Confirm {
+            message: format!(
+                "Repair run {run_id} of “{}” (reruns only the failed tasks)?",
+                rv.owner_name
+            ),
+            args: vec![
+                "jobs".to_string(),
+                "repair-run".to_string(),
+                run_id.clone(),
+                "--rerun-all-failed-tasks".to_string(),
+            ],
         });
     }
 
@@ -2292,6 +2519,9 @@ impl App {
                                 rv.data = Some(data);
                                 rv.live = live;
                             }
+                            RunUpdate::Output(text) => {
+                                rv.output = Some(text);
+                            }
                         }
                         rv.fetched_at = Instant::now();
                     }
@@ -2304,7 +2534,12 @@ impl App {
                 }
             }
         } else if let Some(rv) = &self.run_view {
-            if rv.live && rv.data.is_some() && rv.fetched_at.elapsed() >= Duration::from_secs(5) {
+            // No auto-refresh while reading logs — it would churn run_rx.
+            if rv.live
+                && !rv.show_output
+                && rv.data.is_some()
+                && rv.fetched_at.elapsed() >= Duration::from_secs(5)
+            {
                 if let Some((run_id, _, _)) = rv.runs.get(rv.idx).cloned() {
                     self.start_run_fetch(cli, run_id);
                 }
@@ -2490,6 +2725,17 @@ impl App {
                 self.action_rx = None;
                 if ok {
                     self.start_refresh(cli);
+                    // A confirmed action from the run view (cancel/repair)
+                    // changes the shown run — reflect it without a manual nav.
+                    if self.run_rx.is_none() {
+                        let current = self
+                            .run_view
+                            .as_ref()
+                            .and_then(|rv| rv.runs.get(rv.idx).cloned());
+                        if let Some((run_id, _, _)) = current {
+                            self.start_run_fetch(cli, run_id);
+                        }
+                    }
                 }
                 true
             }

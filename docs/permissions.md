@@ -11,6 +11,8 @@ work with plain read access; the ones below have extra prerequisites.
 | Run drill-down with task errors | `Enter` in a job detail | Can View on the job; error output comes from `jobs get-run-output` |
 | Pipeline update drill-down | `Enter` in a pipeline detail | Can View on the pipeline (update info + event log) |
 | Cancel a run / stop an update | `s` in the run view | Can Manage Run (jobs) / Can Manage (pipelines) |
+| Full task output and logs | `o` in the run view | Can View on the job; one `jobs get-run-output` call per task |
+| Repair a failed run | `r` in the run view | Can Manage Run on the job; uses `jobs repair-run` |
 | Table previews & SQL console | `p`, `:` | **CAN USE** on at least one SQL warehouse |
 | Table size/format facts (DESCRIBE DETAIL) | in table details | `SELECT` on the table + a usable warehouse |
 | Access view | `g` | Ability to read grants on the object (owners and admins always can) |

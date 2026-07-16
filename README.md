@@ -39,6 +39,13 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Cancel from where you stand: `s` in a run/update view cancels it, and
   Esc on a running SQL statement cancels it server-side instead of
   leaving it burning the warehouse
+- Debug failed runs without leaving the terminal: `o` in a run view
+  shows every task's full error, stack trace and log tail, and `r`
+  repairs the run — rerunning only the tasks that failed
+- Wide tables stay readable: previews render natural column widths and
+  page with `←`/`→`, `/` filters columns by name, and `v` flips to a
+  record view (one row, fields stacked) — the way through a
+  500-column table; SQL results page with `Shift+←`/`→`
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
@@ -141,13 +148,15 @@ them can be slow on busy workspaces.
 | `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
 | `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
-| `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Ctrl+S` export CSV |
+| `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Shift+←`/`→` page columns, `Ctrl+S` export CSV |
 | `!` | Problems: everything failing across panes; `Enter` jumps to the item |
 | `Ctrl+P` | Command palette: fuzzy-search everything loaded, `Enter` jumps to it |
 | `s` (run view) | Cancel the shown run / stop the pipeline update |
+| `o` (run view) | Full task output: error, stack trace and log tail per task |
+| `r` (run view) | Repair a failed run — reruns only the failed tasks |
 | `a` / `x` (secrets pane) | Create scope or add secret (masked) / delete with confirm |
 | `Backspace` | Go up one level in the Unity Catalog tree |
-| `p` | Preview sample data for the selected table/view (may start a warehouse); `e` exports CSV |
+| `p` | Preview sample data for the selected table/view (may start a warehouse); `←`/`→` page columns, `/` filters columns, `v` record view, `e` exports CSV |
 | `L` | Lineage tree: up to 3 hops upstream/downstream of the selected table/view |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |

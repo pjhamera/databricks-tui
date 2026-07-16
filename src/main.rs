@@ -448,6 +448,8 @@ async fn run(
                         (KeyCode::Enter, _) => app.sql_run(&cli),
                         (KeyCode::Backspace, _) => app.sql_pop(),
                         (KeyCode::Delete, _) => app.sql_delete(),
+                        (KeyCode::Left, KeyModifiers::SHIFT) => app.sql_cols(-1),
+                        (KeyCode::Right, KeyModifiers::SHIFT) => app.sql_cols(1),
                         (KeyCode::Left, _) => app.sql_left(),
                         (KeyCode::Right, _) => app.sql_right(),
                         (KeyCode::Home, _) => app.sql_home(),
@@ -472,32 +474,53 @@ async fn run(
                         _ => {}
                     }
                 } else if app.preview.is_some() {
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                            break
+                    let pv_entry = app.preview.as_ref().is_some_and(|pv| pv.filter_entry);
+                    let pv_record = app.preview.as_ref().is_some_and(|pv| pv.record);
+                    let pv_filtered = app.preview.as_ref().is_some_and(|pv| !pv.filter.is_empty());
+                    if pv_entry {
+                        // Column filter: printable keys type into the query.
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                            (KeyCode::Esc, _) => app.preview_filter_clear(),
+                            (KeyCode::Enter, _) => app.preview_filter_accept(),
+                            (KeyCode::Backspace, _) => app.preview_filter_pop(),
+                            (KeyCode::Char(ch), _) => app.preview_filter_push(ch),
+                            _ => {}
                         }
-                        (KeyCode::Esc, _) => {
-                            app.close_preview();
-                            needs_redraw = true;
+                        needs_redraw = true;
+                    } else {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('q'), _)
+                            | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                            // Esc peels back one layer: record view, then
+                            // the column filter, then the preview itself.
+                            (KeyCode::Esc, _) if pv_record => app.preview_toggle_record(),
+                            (KeyCode::Esc, _) if pv_filtered => app.preview_filter_clear(),
+                            (KeyCode::Esc, _) => app.close_preview(),
+                            (KeyCode::Char('/'), _) => app.preview_filter_start(),
+                            (KeyCode::Char('v'), _) | (KeyCode::Enter, _) => {
+                                app.preview_toggle_record()
+                            }
+                            (KeyCode::Char('e'), _) => app.preview_export(),
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => app.preview_scroll(1),
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => app.preview_scroll(-1),
+                            (KeyCode::Left, _) | (KeyCode::Char('h'), _) => app.preview_h(-1),
+                            (KeyCode::Right, _) | (KeyCode::Char('l'), _) => app.preview_h(1),
+                            _ => {}
                         }
-                        (KeyCode::Char('e'), _) => {
-                            app.preview_export();
-                            needs_redraw = true;
-                        }
-                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                            app.preview_scroll(1);
-                            needs_redraw = true;
-                        }
-                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                            app.preview_scroll(-1);
-                            needs_redraw = true;
-                        }
-                        _ => {}
+                        needs_redraw = true;
                     }
                 } else if app.run_view.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             break
+                        }
+                        // Esc closes the output view first, then the run.
+                        (KeyCode::Esc, _)
+                            if app.run_view.as_ref().is_some_and(|rv| rv.show_output) =>
+                        {
+                            app.run_toggle_output(&cli);
+                            needs_redraw = true;
                         }
                         (KeyCode::Esc, _) => {
                             app.close_run();
@@ -521,6 +544,14 @@ async fn run(
                         }
                         (KeyCode::Char('J'), _) => {
                             app.run_toggle_raw();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('o'), _) => {
+                            app.run_toggle_output(&cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('r'), _) => {
+                            app.request_run_repair();
                             needs_redraw = true;
                         }
                         (KeyCode::Char('s'), _) => {

@@ -1,5 +1,5 @@
 use crate::app::{App, Panel, ThemeMode};
-use crate::shape::{Shape, Status};
+use crate::shape::{Shape, Status, TableData};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -574,9 +574,20 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             &[
                 ("enter", "job/pipeline detail → latest run/update"),
                 ("h / l", "older / newer run"),
+                ("o", "full task output: error, trace, log tail"),
+                ("r", "repair a failed run — reruns only failed tasks"),
                 ("s", "cancel the shown run"),
                 ("j / k, J", "scroll · toggle raw JSON"),
-                ("e", "in previews: export rows to CSV"),
+            ],
+        ),
+        (
+            "Table previews",
+            &[
+                ("j / k", "scroll rows"),
+                ("← / →", "page columns (wide tables)"),
+                ("/", "filter columns by name"),
+                ("v / enter", "record view: one row, fields stacked"),
+                ("e", "export rows to CSV"),
             ],
         ),
         (
@@ -596,6 +607,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("ctrl+x", "compose in $EDITOR"),
                 ("ctrl+s", "export results to CSV"),
                 ("pgup / pgdn", "scroll results"),
+                ("shift+← / →", "page result columns"),
                 ("esc", "cancel a running query, else close"),
             ],
         ),
@@ -1230,11 +1242,34 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         Some(Ok(t)) => format!("{} rows ", t.rows.len()),
         _ => String::new(),
     };
+    let mut results_title = vec![
+        Span::styled(" Results ", Style::default().fg(p.text)),
+        Span::styled(row_info, Style::default().fg(p.dim)),
+    ];
+    // Wide results page horizontally; say where we are.
+    let avail = parts[1].width.saturating_sub(4) as usize;
+    let sliced = match &console.data {
+        Some(Ok(t)) if !t.headers.is_empty() => {
+            let cols: Vec<usize> = (0..t.headers.len()).collect();
+            let (shown, constraints) = grid_slice(t, &cols, console.col, avail);
+            if shown.len() < cols.len() {
+                let first = console.col.min(cols.len() - 1) + 1;
+                results_title.push(Span::styled(
+                    format!(
+                        "· cols {}–{} of {} (⇧←/→) ",
+                        first,
+                        first + shown.len() - 1,
+                        cols.len()
+                    ),
+                    Style::default().fg(p.dim),
+                ));
+            }
+            Some((shown, constraints))
+        }
+        _ => None,
+    };
     let results_block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Results ", Style::default().fg(p.text)),
-            Span::styled(row_info, Style::default().fg(p.dim)),
-        ]))
+        .title(Line::from(results_title))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(p.border))
@@ -1274,11 +1309,11 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             f.render_widget(par, parts[1]);
         }
         Some(Ok(data)) => {
-            let header_cells: Vec<Cell> = data
-                .headers
+            let (shown, constraints) = sliced.unwrap_or_default();
+            let header_cells: Vec<Cell> = shown
                 .iter()
-                .map(|h| {
-                    Cell::from(h.as_str()).style(
+                .map(|&i| {
+                    Cell::from(data.headers[i].as_str()).style(
                         Style::default()
                             .fg(p.warehouses)
                             .add_modifier(Modifier::BOLD),
@@ -1292,19 +1327,17 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .skip(console.scroll)
                 .map(|r| {
                     Row::new(
-                        r.iter()
-                            .map(|c| Cell::from(c.as_str()).style(Style::default().fg(p.text)))
+                        shown
+                            .iter()
+                            .map(|&i| {
+                                Cell::from(r.get(i).map(String::as_str).unwrap_or(""))
+                                    .style(Style::default().fg(p.text))
+                            })
                             .collect::<Vec<_>>(),
                     )
                 })
                 .collect();
-            let n = data.headers.len().max(1) as u16;
-            let widths: Vec<Constraint> = data
-                .headers
-                .iter()
-                .map(|_| Constraint::Ratio(1, n as u32))
-                .collect();
-            let table = Table::new(rows, widths)
+            let table = Table::new(rows, constraints)
                 .header(header)
                 .column_spacing(1)
                 .block(results_block);
@@ -1313,27 +1346,73 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     }
 }
 
+/// Natural display width of each column in `cols`: the widest of header
+/// and sampled cells, clamped so one huge value can't eat the pane.
+fn grid_widths(data: &TableData, cols: &[usize]) -> Vec<u16> {
+    cols.iter()
+        .map(|&i| {
+            let mut w = data.headers.get(i).map(|h| h.chars().count()).unwrap_or(0);
+            for row in data.rows.iter().take(50) {
+                if let Some(c) = row.get(i) {
+                    w = w.max(c.chars().count());
+                }
+            }
+            w.clamp(4, 36) as u16
+        })
+        .collect()
+}
+
+/// The slice of `cols` that fits in `avail` starting at offset `col`,
+/// with Length constraints — at least one column so the grid never
+/// vanishes. Wide results page through here instead of squeezing every
+/// column into an unreadable sliver.
+fn grid_slice(
+    data: &TableData,
+    cols: &[usize],
+    col: usize,
+    avail: usize,
+) -> (Vec<usize>, Vec<Constraint>) {
+    let widths = grid_widths(data, cols);
+    let col = col.min(cols.len().saturating_sub(1));
+    let mut take = 0usize;
+    let mut used = 0usize;
+    for w in widths.iter().skip(col) {
+        let next = used + *w as usize + if take > 0 { 1 } else { 0 };
+        if take > 0 && next > avail {
+            break;
+        }
+        used = next;
+        take += 1;
+    }
+    let shown: Vec<usize> = cols.iter().skip(col).take(take).cloned().collect();
+    let constraints: Vec<Constraint> = widths
+        .iter()
+        .skip(col)
+        .take(take)
+        .map(|&w| Constraint::Length(w))
+        .collect();
+    (shown, constraints)
+}
+
 fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let pv = app.preview.as_ref().unwrap();
     let acc = p.catalog;
-    let row_info = match &pv.data {
-        Some(Ok(t)) => format!(" · {} rows", t.rows.len()),
-        _ => String::new(),
-    };
-    let title = Line::from(vec![
+    let mut title_spans: Vec<Span<'static>> = vec![
         Span::styled(" ◫ ", Style::default().fg(acc)),
         Span::styled(
-            format!("{}{} · preview ", pv.name, row_info),
+            format!("{} · preview ", pv.name),
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("via {} ", pv.warehouse), Style::default().fg(p.dim)),
-    ]);
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
-        .padding(Padding::horizontal(1));
+    ];
+    let make_block = |spans: Vec<Span<'static>>| {
+        Block::default()
+            .title(Line::from(spans))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
+            .padding(Padding::horizontal(1))
+    };
 
     match &pv.data {
         None => {
@@ -1342,7 +1421,7 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 app.spinner()
             ))
             .style(Style::default().fg(p.warn))
-            .block(block);
+            .block(make_block(title_spans));
             f.render_widget(par, area);
         }
         Some(Err(e)) => {
@@ -1356,41 +1435,114 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             let par = Paragraph::new(text)
                 .style(Style::default().fg(p.err))
                 .wrap(Wrap { trim: false })
-                .block(block);
+                .block(make_block(title_spans));
             f.render_widget(par, area);
         }
         Some(Ok(data)) => {
-            let header_cells: Vec<Cell> = data
-                .headers
-                .iter()
-                .map(|h| {
-                    Cell::from(h.as_str())
-                        .style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
-                })
-                .collect();
-            let header = Row::new(header_cells);
+            title_spans.push(Span::styled(
+                format!("· {} rows ", data.rows.len()),
+                Style::default().fg(p.dim),
+            ));
+            let cols = pv.visible_cols();
+            if !pv.filter.is_empty() {
+                title_spans.push(Span::styled(
+                    format!("· cols /{} ", pv.filter),
+                    Style::default().fg(p.warn),
+                ));
+            }
+            if cols.is_empty() {
+                let par = Paragraph::new(format!(
+                    "no columns match /{} — backspace to widen, esc to clear",
+                    pv.filter
+                ))
+                .style(Style::default().fg(p.warn))
+                .block(make_block(title_spans));
+                f.render_widget(par, area);
+                return;
+            }
+            if pv.record {
+                // Transposed: one row, fields stacked — the readable way
+                // through a table with hundreds of columns.
+                let row_n = pv.scroll.min(data.rows.len().saturating_sub(1));
+                title_spans.push(Span::styled(
+                    format!("· row {}/{} ", row_n + 1, data.rows.len()),
+                    Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+                ));
+                let name_w = cols
+                    .iter()
+                    .map(|&i| data.headers[i].chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .min(32);
+                let empty: Vec<String> = Vec::new();
+                let row = data.rows.get(row_n).unwrap_or(&empty);
+                let lines: Vec<Line> = cols
+                    .iter()
+                    .map(|&i| {
+                        let value = row.get(i).map(String::as_str).unwrap_or("");
+                        let vstyle = if value == "␀" {
+                            Style::default().fg(p.dim)
+                        } else {
+                            Style::default().fg(p.text)
+                        };
+                        Line::from(vec![
+                            Span::styled(
+                                format!("{:<name_w$}  ", data.headers[i]),
+                                Style::default().fg(acc),
+                            ),
+                            Span::styled(value.to_string(), vstyle),
+                        ])
+                    })
+                    .collect();
+                let par = Paragraph::new(lines)
+                    .scroll((pv.rscroll, 0))
+                    .block(make_block(title_spans));
+                f.render_widget(par, area);
+                return;
+            }
+            let avail = area.width.saturating_sub(4) as usize; // borders + padding
+            let (shown, constraints) = grid_slice(data, &cols, pv.col, avail);
+            if shown.len() < cols.len() {
+                let first = pv.col.min(cols.len() - 1) + 1;
+                title_spans.push(Span::styled(
+                    format!(
+                        "· cols {}–{} of {} ",
+                        first,
+                        first + shown.len() - 1,
+                        cols.len()
+                    ),
+                    Style::default().fg(p.dim),
+                ));
+            }
+            let header = Row::new(
+                shown
+                    .iter()
+                    .map(|&i| {
+                        Cell::from(data.headers[i].clone())
+                            .style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
+                    })
+                    .collect::<Vec<_>>(),
+            );
             let rows: Vec<Row> = data
                 .rows
                 .iter()
                 .skip(pv.scroll)
                 .map(|r| {
                     Row::new(
-                        r.iter()
-                            .map(|c| Cell::from(c.as_str()).style(Style::default().fg(p.text)))
+                        shown
+                            .iter()
+                            .map(|&i| {
+                                Cell::from(r.get(i).cloned().unwrap_or_default())
+                                    .style(Style::default().fg(p.text))
+                            })
                             .collect::<Vec<_>>(),
                     )
                 })
                 .collect();
-            let n = data.headers.len().max(1) as u16;
-            let widths: Vec<Constraint> = data
-                .headers
-                .iter()
-                .map(|_| Constraint::Ratio(1, n as u32))
-                .collect();
-            let table = Table::new(rows, widths)
+            let table = Table::new(rows, constraints)
                 .header(header)
                 .column_spacing(1)
-                .block(block);
+                .block(make_block(title_spans));
             f.render_widget(table, area);
         }
     }
@@ -1499,12 +1651,37 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
         ));
     }
+    if rv.show_output {
+        title_spans.push(Span::styled(
+            "· output ",
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
     let block = Block::default()
         .title(Line::from(title_spans))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(acc).add_modifier(Modifier::BOLD))
         .padding(Padding::horizontal(1));
+
+    // Full task output/logs, layered over the run detail.
+    if rv.show_output {
+        let par = match &rv.output {
+            Some(text) => Paragraph::new(text.as_str())
+                .style(Style::default().fg(p.text))
+                .wrap(Wrap { trim: false })
+                .scroll((rv.scroll, 0))
+                .block(block),
+            None => Paragraph::new(format!(
+                "{} fetching task output — one call per task…",
+                app.spinner()
+            ))
+            .style(Style::default().fg(p.warn))
+            .block(block),
+        };
+        f.render_widget(par, area);
+        return;
+    }
 
     let Some(data) = &rv.data else {
         let par = Paragraph::new(format!("{} Loading run…", app.spinner()))
@@ -1700,6 +1877,25 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         return;
     }
 
+    if let Some(pv) = &app.preview {
+        if pv.filter_entry {
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" cols /{}", pv.filter),
+                    Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("▏", Style::default().fg(p.warn)),
+                dim("  type to filter columns   "),
+                key("enter"),
+                dim(" apply   "),
+                key("esc"),
+                dim(" clear"),
+            ]);
+            f.render_widget(Paragraph::new(line), area);
+            return;
+        }
+    }
+
     let mut spans = if app.secret_form.is_some() {
         vec![
             dim(" type   "),
@@ -1804,6 +2000,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 dim("/"),
                 key("pgdn"),
                 dim(" scroll   "),
+                key("⇧←→"),
+                dim(" cols   "),
                 key("^s"),
                 dim(" export   "),
                 key("esc"),
@@ -1814,20 +2012,48 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 }),
             ]
         }
-    } else if app.preview.is_some() {
-        vec![
-            dim(" "),
-            key("esc"),
-            dim(" back   "),
-            key("j"),
-            dim("/"),
-            key("k"),
-            dim(" scroll rows   "),
-            key("e"),
-            dim(" export csv   "),
-            key("q"),
-            dim(" quit"),
-        ]
+    } else if let Some(pv) = &app.preview {
+        if pv.record {
+            vec![
+                dim(" "),
+                key("j"),
+                dim("/"),
+                key("k"),
+                dim(" fields   "),
+                key("h"),
+                dim("/"),
+                key("l"),
+                dim(" prev/next row   "),
+                key("v"),
+                dim(" grid   "),
+                key("/"),
+                dim(" filter cols   "),
+                key("esc"),
+                dim(" back"),
+            ]
+        } else {
+            vec![
+                dim(" "),
+                key("esc"),
+                dim(" back   "),
+                key("j"),
+                dim("/"),
+                key("k"),
+                dim(" rows   "),
+                key("←"),
+                dim("/"),
+                key("→"),
+                dim(" columns   "),
+                key("v"),
+                dim(" row view   "),
+                key("/"),
+                dim(" filter cols   "),
+                key("e"),
+                dim(" export csv   "),
+                key("q"),
+                dim(" quit"),
+            ]
+        }
     } else if app.picker.is_some() {
         vec![
             dim(" "),
@@ -1840,26 +2066,49 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("esc"),
             dim(" cancel"),
         ]
-    } else if app.run_view.is_some() {
-        vec![
-            dim(" "),
-            key("esc"),
-            dim(" back   "),
-            key("h"),
-            dim("/"),
-            key("l"),
-            dim(" older/newer   "),
-            key("s"),
-            dim(" cancel   "),
-            key("j"),
-            dim("/"),
-            key("k"),
-            dim(" scroll   "),
-            key("J"),
-            dim(" raw   "),
-            key("q"),
-            dim(" quit"),
-        ]
+    } else if let Some(rv) = &app.run_view {
+        if rv.show_output {
+            vec![
+                dim(" "),
+                key("esc"),
+                dim(" back to run   "),
+                key("j"),
+                dim("/"),
+                key("k"),
+                dim(" scroll   "),
+                key("q"),
+                dim(" quit"),
+            ]
+        } else {
+            let mut spans = vec![
+                dim(" "),
+                key("esc"),
+                dim(" back   "),
+                key("h"),
+                dim("/"),
+                key("l"),
+                dim(" older/newer   "),
+            ];
+            if rv.panel == Panel::Jobs {
+                spans.push(key("o"));
+                spans.push(dim(" output   "));
+                spans.push(key("r"));
+                spans.push(dim(" repair   "));
+            }
+            spans.extend([
+                key("s"),
+                dim(" cancel   "),
+                key("j"),
+                dim("/"),
+                key("k"),
+                dim(" scroll   "),
+                key("J"),
+                dim(" raw   "),
+                key("q"),
+                dim(" quit"),
+            ]);
+            spans
+        }
     } else if app.detail.is_some() {
         let mut spans = vec![dim(" "), key("esc"), dim(" back   ")];
         match app.detail.as_ref() {

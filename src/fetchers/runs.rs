@@ -23,6 +23,84 @@ pub async fn list(
         .unwrap_or_default())
 }
 
+/// Complete output of a run, task by task: the full error, stack trace
+/// and log tail from `jobs get-run-output`. One CLI call per task, so
+/// this is fetched on demand when the user opens the output view.
+pub async fn full_output(cli: &DatabricksCli, run_id: &str) -> String {
+    let json = match cli.run(&["jobs", "get-run", run_id]).await {
+        Ok(v) => v,
+        Err(e) => return format!("✗ {e:#}"),
+    };
+    // Multi-task runs carry per-task run ids; a legacy single-task run
+    // is its own task.
+    let tasks: Vec<(String, String, Status)> = match json["tasks"].as_array() {
+        Some(ts) if !ts.is_empty() => ts
+            .iter()
+            .filter_map(|t| {
+                Some((
+                    t["task_key"].as_str().unwrap_or("task").to_string(),
+                    t["run_id"].as_u64()?.to_string(),
+                    run_status(t),
+                ))
+            })
+            .collect(),
+        _ => vec![("run".to_string(), run_id.to_string(), run_status(&json))],
+    };
+
+    let mut out = String::new();
+    for (key, id, status) in &tasks {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("── {key} · {} ──\n", status.label()));
+        match cli.run(&["jobs", "get-run-output", id]).await {
+            Ok(o) => {
+                let mut wrote = false;
+                if let Some(err) = o["error"].as_str().filter(|s| !s.is_empty()) {
+                    out.push_str(err.trim_end());
+                    out.push('\n');
+                    wrote = true;
+                }
+                if let Some(trace) = o["error_trace"].as_str().filter(|s| !s.is_empty()) {
+                    out.push('\n');
+                    out.push_str(trace.trim_end());
+                    out.push('\n');
+                    wrote = true;
+                }
+                if let Some(result) = o["notebook_output"]["result"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                {
+                    out.push_str("notebook result: ");
+                    out.push_str(result.trim_end());
+                    out.push('\n');
+                    wrote = true;
+                }
+                if let Some(logs) = o["logs"].as_str().filter(|s| !s.is_empty()) {
+                    // Keep the tail — that's where the failure is.
+                    let tail: Vec<&str> = logs.lines().rev().take(200).collect();
+                    out.push_str("logs (tail):\n");
+                    for line in tail.iter().rev() {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                    wrote = true;
+                }
+                if !wrote {
+                    out.push_str("(no output recorded for this task)\n");
+                }
+            }
+            // Running tasks have no output yet; say why instead of nothing.
+            Err(e) => {
+                let msg = format!("{e:#}");
+                let first = msg.lines().next().unwrap_or("no output available");
+                out.push_str(&format!("({first})\n"));
+            }
+        }
+    }
+    out
+}
+
 /// Full detail of one run: state, timing, per-task results, and the
 /// actual error output for failed tasks. The bool is true while the
 /// run is still executing.
