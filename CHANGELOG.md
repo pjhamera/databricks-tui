@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- Task DAG view: press `d` in a job run to see the tasks as a dependency
+  tree — each task under the task it waits for, colored by state, with
+  extra dependencies annotated
+- Live output tailing: the `o` output view now keeps re-fetching while
+  the run executes, so task output and errors stream in as tasks finish
+  (the title shows "output (tailing)")
+- Upcoming runs (`u`): every job with a cron schedule, periodic or
+  file-arrival trigger, or continuous mode, sorted by next fire time
+  with countdowns; Enter jumps to the job. The jobs pane shows the
+  countdown inline ("1h ago · ⏱ in 27m") and job details gain a
+  "Next run" row
+
 ## [0.22.0] - 2026-07-18
 
 ### Added

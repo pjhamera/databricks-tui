@@ -43,10 +43,17 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   leaving it burning the warehouse
 - Debug failed runs without leaving the terminal: `o` in a run view
   shows every task's full error, stack trace and log tail, and `r`
-  repairs the run — rerunning only the tasks that failed
+  repairs the run — rerunning only the tasks that failed; on a running
+  run the output view keeps tailing, so errors stream in as tasks finish
 - Run timeline (`t` in a run view): every task's execution window as a
   Gantt bar on a shared time axis, colored by state — see at a glance
   what ran in parallel and which task ate the runtime
+- Task DAG (`d` in a run view): the run's tasks as a dependency tree,
+  each under the task it waits for, colored by state
+- Upcoming runs (`u`): every job that will run again on its own — cron
+  schedules, periodic and file-arrival triggers, continuous jobs —
+  sorted by next fire time with countdowns, and `⏱ in 27m` shown right
+  in the jobs pane
 - Wide tables stay readable: previews render natural column widths and
   page with `←`/`→`, `/` filters columns by name, and `v` flips to a
   record view (one row, fields stacked) — the way through a
@@ -160,6 +167,8 @@ them can be slow on busy workspaces.
 | `o` (run view) | Full task output: error, stack trace and log tail per task |
 | `r` (run view) | Repair a failed run — reruns only the failed tasks |
 | `t` (run view) | Timeline: per-task Gantt of the run on a shared time axis |
+| `d` (run view) | DAG: the run's tasks as a dependency tree, colored by state |
+| `u` | Upcoming runs: what fires next across all scheduled/triggered jobs, soonest first; `Enter` jumps to the job |
 | `a` / `x` (secrets pane) | Create scope or add secret (masked) / delete with confirm |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse); `←`/`→` page columns, `/` filters columns, `v` record view, `e` exports CSV |

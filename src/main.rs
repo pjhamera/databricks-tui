@@ -238,6 +238,9 @@ async fn run(
         if app.poll_run(&cli) {
             needs_redraw = true;
         }
+        if app.poll_upcoming() {
+            needs_redraw = true;
+        }
 
         // Splash: animate fast, expire on its deadline.
         if let Some(t) = app.splash_until {
@@ -317,6 +320,29 @@ async fn run(
                                 app.start_refresh(&cli);
                                 app.fetch_host(&cli);
                             }
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
+                } else if app.upcoming.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        (KeyCode::Esc, _) | (KeyCode::Char('u'), _) => {
+                            app.close_upcoming();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            app.upcoming_next();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            app.upcoming_prev();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Enter, _) => {
+                            app.upcoming_jump();
                             needs_redraw = true;
                         }
                         _ => {}
@@ -553,6 +579,12 @@ async fn run(
                             app.run_toggle_timeline();
                             needs_redraw = true;
                         }
+                        (KeyCode::Esc, _)
+                            if app.run_view.as_ref().is_some_and(|rv| rv.show_dag) =>
+                        {
+                            app.run_toggle_dag();
+                            needs_redraw = true;
+                        }
                         (KeyCode::Esc, _) => {
                             app.close_run();
                             needs_redraw = true;
@@ -583,6 +615,10 @@ async fn run(
                         }
                         (KeyCode::Char('t'), _) => {
                             app.run_toggle_timeline();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('d'), _) => {
+                            app.run_toggle_dag();
                             needs_redraw = true;
                         }
                         (KeyCode::Char('r'), _) => {
@@ -647,6 +683,10 @@ async fn run(
                         }
                         (KeyCode::Char('!'), _) => {
                             app.open_problems();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('u'), _) => {
+                            app.open_upcoming(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Char('p'), KeyModifiers::CONTROL) => {

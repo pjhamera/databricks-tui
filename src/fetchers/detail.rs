@@ -195,6 +195,15 @@ fn job_summary(j: &Value) -> Vec<(String, String)> {
             format!("{cron} {tz}{suffix}")
         });
     push(&mut s, "Schedule", schedule);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    push(
+        &mut s,
+        "Next run",
+        crate::schedule::next_run(settings, None, now).map(|n| n.label),
+    );
     push(
         &mut s,
         "Tasks",

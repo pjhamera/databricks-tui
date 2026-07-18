@@ -11,5 +11,6 @@ pub mod pipelines;
 pub mod preview;
 pub mod runs;
 pub mod secrets;
+pub mod upcoming;
 pub mod updates;
 pub mod warehouses;

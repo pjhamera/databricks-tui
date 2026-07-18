@@ -414,6 +414,9 @@ pub struct RunView {
     /// Gantt view of per-task execution windows; sticky across h/l so
     /// runs can be compared.
     pub show_timeline: bool,
+    /// Dependency-tree view of the run's tasks; mutually exclusive with
+    /// the timeline, sticky across h/l like it.
+    pub show_dag: bool,
     fetched_at: Instant,
 }
 
@@ -423,7 +426,8 @@ type RunOpened = (Vec<(String, Status, String)>, DetailData, bool);
 enum RunUpdate {
     Opened(Result<RunOpened, String>),
     Detail(DetailData, bool),
-    Output(String),
+    /// Full task output plus whether the run is still executing.
+    Output(String, bool),
 }
 
 /// One unhealthy resource, pointing back at its pane and item.
@@ -438,6 +442,13 @@ pub struct Problem {
 pub struct Problems {
     pub items: Vec<Problem>,
     pub index: usize,
+}
+
+/// Overlay listing jobs by their next scheduled execution, soonest first.
+pub struct Upcoming {
+    pub items: Vec<fetchers::upcoming::UpcomingJob>,
+    pub index: usize,
+    pub loading: bool,
 }
 
 /// A pending destructive/mutating action awaiting a y/n keystroke.
@@ -475,6 +486,7 @@ pub struct App {
     pub picker: Option<usize>,
     /// When Some, the problems overlay is open.
     pub problems: Option<Problems>,
+    pub upcoming: Option<Upcoming>,
     /// Current position in the Unity Catalog tree: [], [catalog] or [catalog, schema].
     pub uc_path: Vec<String>,
     uc_rx: Option<oneshot::Receiver<Result<Shape, String>>>,
@@ -501,6 +513,8 @@ pub struct App {
     pub hist_search: Option<(String, usize)>,
     pub run_view: Option<RunView>,
     run_rx: Option<oneshot::Receiver<RunUpdate>>,
+    #[allow(clippy::type_complexity)]
+    upcoming_rx: Option<oneshot::Receiver<Result<Vec<fetchers::upcoming::UpcomingJob>, String>>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
     detail_rx: Option<oneshot::Receiver<DetailData>>,
     action_rx: Option<oneshot::Receiver<Result<String, String>>>,
@@ -587,6 +601,7 @@ impl App {
             profile: None,
             picker: None,
             problems: None,
+            upcoming: None,
             uc_path: Vec::new(),
             uc_rx: None,
             preview: None,
@@ -604,6 +619,7 @@ impl App {
             hist_search: None,
             run_view: None,
             run_rx: None,
+            upcoming_rx: None,
             pending: None,
             detail_rx: None,
             action_rx: None,
@@ -1047,6 +1063,91 @@ impl App {
         if let Some(Shape::List(list)) = &self.shapes[problem.panel] {
             if let Some(pos) = list.iter().position(|i| i.name == problem.name) {
                 self.selected[problem.panel] = pos;
+            }
+        }
+    }
+
+    /// `u`: what runs next — every job with a schedule or trigger,
+    /// soonest first, fetched fresh so the countdowns are current.
+    pub fn open_upcoming(&mut self, cli: &Arc<DatabricksCli>) {
+        self.upcoming = Some(Upcoming {
+            items: Vec::new(),
+            index: 0,
+            loading: true,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.upcoming_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let _ = tx.send(fetchers::upcoming::fetch(&cli).await);
+        });
+    }
+
+    pub fn close_upcoming(&mut self) {
+        self.upcoming = None;
+        self.upcoming_rx = None;
+    }
+
+    pub fn poll_upcoming(&mut self) -> bool {
+        let Some(rx) = &mut self.upcoming_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.upcoming_rx = None;
+                match result {
+                    Ok(items) => {
+                        if let Some(u) = &mut self.upcoming {
+                            u.items = items;
+                            u.loading = false;
+                        }
+                    }
+                    Err(e) => {
+                        self.upcoming = None;
+                        let first = e.lines().next().unwrap_or("failed").to_string();
+                        self.flash = Some((format!("✗ upcoming: {first}"), Instant::now()));
+                    }
+                }
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.upcoming_rx = None;
+                true
+            }
+        }
+    }
+
+    pub fn upcoming_next(&mut self) {
+        if let Some(u) = &mut self.upcoming {
+            u.index = (u.index + 1).min(u.items.len().saturating_sub(1));
+        }
+    }
+
+    pub fn upcoming_prev(&mut self) {
+        if let Some(u) = &mut self.upcoming {
+            u.index = u.index.saturating_sub(1);
+        }
+    }
+
+    /// Jumps focus and selection to the highlighted job in the Jobs pane.
+    pub fn upcoming_jump(&mut self) {
+        let Some(u) = self.upcoming.take() else {
+            return;
+        };
+        self.upcoming_rx = None;
+        let Some(item) = u.items.get(u.index) else {
+            return;
+        };
+        let Some(idx) = Panel::ALL.iter().position(|p| *p == Panel::Jobs) else {
+            return;
+        };
+        self.reveal_pane(idx);
+        self.focus = Panel::Jobs;
+        self.filters[idx].clear();
+        if let Some(Shape::List(list)) = &self.shapes[idx] {
+            if let Some(pos) = list.iter().position(|i| i.name == item.name) {
+                self.selected[idx] = pos;
             }
         }
     }
@@ -2637,6 +2738,7 @@ impl App {
             output: None,
             show_output: false,
             show_timeline: false,
+            show_dag: false,
             fetched_at: Instant::now(),
         });
         let (tx, rx) = oneshot::channel();
@@ -2746,6 +2848,13 @@ impl App {
         if rv.output.is_some() {
             return;
         }
+        self.start_output_fetch(cli);
+    }
+
+    fn start_output_fetch(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(rv) = &self.run_view else {
+            return;
+        };
         let Some((run_id, _, _)) = rv.runs.get(rv.idx).cloned() else {
             return;
         };
@@ -2753,8 +2862,8 @@ impl App {
         self.run_rx = Some(rx);
         let cli = Arc::clone(cli);
         tokio::spawn(async move {
-            let text = fetchers::runs::full_output(&cli, &run_id).await;
-            let _ = tx.send(RunUpdate::Output(text));
+            let (text, live) = fetchers::runs::full_output(&cli, &run_id).await;
+            let _ = tx.send(RunUpdate::Output(text, live));
         });
     }
 
@@ -2814,6 +2923,24 @@ impl App {
             return;
         }
         rv.show_timeline = !rv.show_timeline;
+        rv.show_dag = false;
+        rv.scroll = 0;
+    }
+
+    /// `d` in the run view: dependency tree of the run's tasks.
+    pub fn run_toggle_dag(&mut self) {
+        let Some(rv) = &mut self.run_view else {
+            return;
+        };
+        if rv.panel != Panel::Jobs {
+            self.flash = Some((
+                "✗ the task DAG is for job runs — pipelines have no task graph here".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        rv.show_dag = !rv.show_dag;
+        rv.show_timeline = false;
         rv.scroll = 0;
     }
 
@@ -2861,8 +2988,9 @@ impl App {
                                 rv.data = Some(data);
                                 rv.live = live;
                             }
-                            RunUpdate::Output(text) => {
+                            RunUpdate::Output(text, live) => {
                                 rv.output = Some(text);
+                                rv.live = live;
                             }
                         }
                         rv.fetched_at = Instant::now();
@@ -2876,13 +3004,14 @@ impl App {
                 }
             }
         } else if let Some(rv) = &self.run_view {
-            // No auto-refresh while reading logs — it would churn run_rx.
-            if rv.live
-                && !rv.show_output
-                && rv.data.is_some()
-                && rv.fetched_at.elapsed() >= Duration::from_secs(5)
-            {
-                if let Some((run_id, _, _)) = rv.runs.get(rv.idx).cloned() {
+            if rv.live && rv.data.is_some() && rv.fetched_at.elapsed() >= Duration::from_secs(5) {
+                if rv.show_output {
+                    // Live tail: keep re-fetching output so task results
+                    // stream in as they finish.
+                    if rv.output.is_some() {
+                        self.start_output_fetch(cli);
+                    }
+                } else if let Some((run_id, _, _)) = rv.runs.get(rv.idx).cloned() {
                     self.start_run_fetch(cli, run_id);
                 }
             }

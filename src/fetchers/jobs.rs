@@ -49,6 +49,7 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
             .as_str()
             .unwrap_or("unknown")
             .to_string();
+        let settings = j["settings"].clone();
         let cli = cli.clone();
         let sem = Arc::clone(&sem);
         tasks.push(tokio::spawn(async move {
@@ -68,7 +69,7 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
                     runs = runs_of(&json);
                 }
             }
-            build_item(name, job_id, &runs)
+            build_item(name, job_id, &runs, &settings)
         }));
     }
 
@@ -81,16 +82,24 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
     Ok(Shape::List(items))
 }
 
-fn build_item(name: String, job_id: Option<u64>, runs: &[Value]) -> ListItem {
+fn build_item(name: String, job_id: Option<u64>, runs: &[Value], settings: &Value) -> ListItem {
     let status = runs
         .first()
         .map(run_status)
         .unwrap_or(Status::Unknown("NO RUNS".to_string()));
     let history: Vec<Status> = runs.iter().take(5).rev().map(run_status).collect();
-    let detail = runs
-        .first()
-        .and_then(|r| r["start_time"].as_u64())
-        .map(relative_time);
+    let last_start = runs.first().and_then(|r| r["start_time"].as_u64());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    // "1h ago · ⏱ in 27m" — when the job last ran and when it runs next.
+    let next =
+        crate::schedule::next_run(settings, last_start, now).map(|n| format!("⏱ {}", n.label));
+    let detail = match (last_start.map(relative_time), next) {
+        (Some(ago), Some(next)) => Some(format!("{ago} · {next}")),
+        (ago, next) => ago.or(next),
+    };
     ListItem {
         name,
         status,

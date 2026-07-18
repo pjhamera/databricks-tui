@@ -283,6 +283,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.problems.is_some() {
             draw_problems(f, root[1], app, &p);
         }
+        if app.upcoming.is_some() {
+            draw_upcoming(f, root[1], app, &p);
+        }
         if app.jump.is_some() {
             draw_jump(f, root[1], app, &p);
         }
@@ -375,6 +378,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.problems.is_some() {
         draw_problems(f, root[1], app, &p);
+    }
+    if app.upcoming.is_some() {
+        draw_upcoming(f, root[1], app, &p);
     }
     if app.jump.is_some() {
         draw_jump(f, root[1], app, &p);
@@ -543,6 +549,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("/", "filter the focused pane (esc clears)"),
                 ("ctrl+p", "command palette: fuzzy-jump anywhere"),
                 ("!", "problems: everything failing, enter jumps"),
+                ("u", "upcoming runs: what fires next, soonest first"),
                 (":", "SQL console (prefilled on a catalog table)"),
                 ("$", "cost view: DBUs, dollars, top spenders"),
                 ("H", "arrange panes: hide and reorder"),
@@ -577,8 +584,9 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             &[
                 ("enter", "job/pipeline detail → latest run/update"),
                 ("h / l", "older / newer run"),
-                ("o", "full task output: error, trace, log tail"),
+                ("o", "full task output — keeps tailing while live"),
                 ("t", "timeline: per-task Gantt of the run"),
+                ("d", "dag: task dependency tree of the run"),
                 ("r", "repair a failed run — reruns only failed tasks"),
                 ("s", "cancel the shown run"),
                 ("j / k, J", "scroll · toggle raw JSON"),
@@ -795,6 +803,116 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         .block(block)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default().with_selected(Some(pr.index));
+    f.render_stateful_widget(list, popup, &mut state);
+}
+
+/// Overlay listing every job that will run again on its own, soonest
+/// first: countdown, job name, and the schedule that drives it.
+fn draw_upcoming(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(u) = &app.upcoming else {
+        return;
+    };
+    let label_w = u
+        .items
+        .iter()
+        .map(|i| i.next.label.chars().count())
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 18);
+    let name_w = u
+        .items
+        .iter()
+        .map(|i| i.name.chars().count())
+        .max()
+        .unwrap_or(10)
+        .clamp(10, 40);
+    let desc_w = u
+        .items
+        .iter()
+        .map(|i| i.next.desc.chars().count())
+        .max()
+        .unwrap_or(0);
+    let width = ((label_w + name_w + desc_w + 12) as u16).min(area.width.saturating_sub(4));
+    let height = (u.items.len().max(1) as u16 + 4).min(area.height);
+    let desc_space = (width as usize).saturating_sub(label_w + name_w + 10);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ⏱ ", Style::default().fg(p.key)),
+            Span::styled(
+                format!("Upcoming runs · {} ", u.items.len()),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.key).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 1));
+
+    if u.loading {
+        let par = Paragraph::new(format!("{} reading job schedules…", app.spinner()))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+        f.render_widget(par, popup);
+        return;
+    }
+    if u.items.is_empty() {
+        let par = Paragraph::new("no scheduled or triggered jobs — everything runs on demand")
+            .style(Style::default().fg(p.dim))
+            .block(block);
+        f.render_widget(par, popup);
+        return;
+    }
+
+    let truncate = |s: &str, max: usize| -> String {
+        if s.chars().count() <= max {
+            s.to_string()
+        } else {
+            let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+            format!("{cut}…")
+        }
+    };
+    let items: Vec<ListItem> = u
+        .items
+        .iter()
+        .map(|it| {
+            let when_color = if it.next.paused {
+                p.dim
+            } else if it.next.at_ms.is_some() {
+                p.ok
+            } else {
+                p.warn
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{:<width$}",
+                        truncate(&it.next.label, label_w),
+                        width = label_w + 2
+                    ),
+                    Style::default().fg(when_color),
+                ),
+                Span::styled(
+                    format!("{:<width$}", truncate(&it.name, name_w), width = name_w + 2),
+                    Style::default().fg(p.text),
+                ),
+                Span::styled(
+                    truncate(&it.next.desc, desc_space),
+                    Style::default().fg(p.dim),
+                ),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(u.index));
     f.render_stateful_widget(list, popup, &mut state);
 }
 
@@ -1722,13 +1840,23 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     }
     if rv.show_output {
         title_spans.push(Span::styled(
-            "· output ",
+            if rv.live {
+                "· output (tailing) "
+            } else {
+                "· output "
+            },
             Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
         ));
     }
     if rv.show_timeline {
         title_spans.push(Span::styled(
             "· timeline ",
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if rv.show_dag {
+        title_spans.push(Span::styled(
+            "· dag ",
             Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
         ));
     }
@@ -1768,6 +1896,11 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
 
     if rv.show_timeline {
         draw_run_timeline(f, area, rv.scroll, data, block, p);
+        return;
+    }
+
+    if rv.show_dag {
+        draw_run_dag(f, area, rv.scroll, data, block, p);
         return;
     }
 
@@ -1911,6 +2044,66 @@ fn draw_run_timeline(
             ),
             Span::styled(dur, Style::default().fg(p.dim)),
         ]));
+    }
+    let par = Paragraph::new(lines).scroll((scroll, 0)).block(block);
+    f.render_widget(par, area);
+}
+
+/// Dependency tree of a job run's tasks: each task under the task it
+/// waits for, colored by state, with extra dependencies annotated.
+fn draw_run_dag(
+    f: &mut Frame,
+    area: Rect,
+    scroll: u16,
+    data: &DetailData,
+    block: Block,
+    p: &Palette,
+) {
+    let rows = crate::fetchers::runs::dag(&data.raw);
+    if rows.is_empty() {
+        let par = Paragraph::new(
+            "no task graph recorded — legacy single-task runs carry none (J shows the raw JSON)",
+        )
+        .style(Style::default().fg(p.dim))
+        .wrap(Wrap { trim: false })
+        .block(block);
+        f.render_widget(par, area);
+        return;
+    }
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(
+                "⧉ {} task{} · order of execution, top to bottom",
+                rows.len(),
+                if rows.len() == 1 { "" } else { "s" },
+            ),
+            Style::default().fg(p.dim),
+        )),
+        Line::default(),
+    ];
+    for r in &rows {
+        let mut spans = vec![
+            Span::styled(r.prefix.clone(), Style::default().fg(p.dim)),
+            Span::styled("● ", Style::default().fg(status_color(&r.status, p))),
+            Span::styled(r.key.clone(), Style::default().fg(p.text)),
+            Span::styled(
+                format!("  {}", r.status.label().to_lowercase()),
+                Style::default().fg(status_color(&r.status, p)),
+            ),
+        ];
+        if let Some(d) = r.duration {
+            spans.push(Span::styled(
+                format!("  ·  {}", crate::shape::fmt_duration_ms(d)),
+                Style::default().fg(p.dim),
+            ));
+        }
+        if !r.also_after.is_empty() {
+            spans.push(Span::styled(
+                format!("  (also after {})", r.also_after.join(", ")),
+                Style::default().fg(p.dim),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     let par = Paragraph::new(lines).scroll((scroll, 0)).block(block);
     f.render_widget(par, area);
@@ -2128,6 +2321,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("esc"),
             dim(" close"),
         ]
+    } else if app.upcoming.is_some() {
+        vec![
+            dim(" "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" select   "),
+            key("enter"),
+            dim(" jump to job   "),
+            key("esc"),
+            dim(" close"),
+        ]
     } else if app.cost.is_some() {
         vec![
             dim(" "),
@@ -2272,6 +2477,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 spans.push(dim(" output   "));
                 spans.push(key("t"));
                 spans.push(dim(" timeline   "));
+                spans.push(key("d"));
+                spans.push(dim(" dag   "));
                 spans.push(key("r"));
                 spans.push(dim(" repair   "));
             }
@@ -2389,6 +2596,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim(" cost   "),
             key("!"),
             dim(" problems   "),
+            key("u"),
+            dim(" upcoming   "),
         ]);
         // At the catalog's table level the ':' hint already reads "query table".
         if !(app.focus == Panel::Catalog && app.uc_path.len() == 2) {

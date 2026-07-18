@@ -27,6 +27,9 @@ self_update = { version = "0.42", default-features = false, features = [
     "archive-tar",
     "compression-flate2",
 ] }
+cron = "0.17.0"
+chrono = "0.4.45"
+chrono-tz = "0.10.4"
 
 [dev-dependencies]
 tokio-test = "0.4"

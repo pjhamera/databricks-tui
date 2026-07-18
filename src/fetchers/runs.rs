@@ -60,14 +60,128 @@ pub fn timeline(raw: &str) -> Vec<TimelineTask> {
     tasks
 }
 
+/// One row of the task dependency tree, ready to render.
+pub struct DagRow {
+    /// Branch guides + connector, e.g. "│  ├─ ". Empty for roots.
+    pub prefix: String,
+    pub key: String,
+    pub status: Status,
+    /// Execution duration in ms, when recorded.
+    pub duration: Option<u64>,
+    /// Dependencies beyond the parent this row is placed under.
+    pub also_after: Vec<String>,
+}
+
+/// Task dependency tree of a run, parsed from a stored get-run response.
+/// Each task appears once, placed under its first dependency; additional
+/// dependencies are listed in `also_after`. Tasks whose placement parent
+/// is missing (or cyclic) are appended at root level.
+pub fn dag(raw: &str) -> Vec<DagRow> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let tasks = json["tasks"].as_array().cloned().unwrap_or_default();
+    let info: Vec<(String, Vec<String>, Status, Option<u64>)> = tasks
+        .iter()
+        .map(|t| {
+            let deps: Vec<String> = t["depends_on"]
+                .as_array()
+                .map(|ds| {
+                    ds.iter()
+                        .filter_map(|d| d["task_key"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let dur = t["execution_duration"]
+                .as_u64()
+                .or_else(|| t["run_duration"].as_u64())
+                .filter(|d| *d > 0);
+            (
+                t["task_key"].as_str().unwrap_or("?").to_string(),
+                deps,
+                run_status(t),
+                dur,
+            )
+        })
+        .collect();
+    let keys: Vec<&str> = info.iter().map(|(k, _, _, _)| k.as_str()).collect();
+
+    // children[i] = indices placed under task i (first dependency wins).
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); info.len()];
+    let mut roots: Vec<usize> = Vec::new();
+    for (i, (_, deps, _, _)) in info.iter().enumerate() {
+        match deps.first().and_then(|d| keys.iter().position(|k| k == d)) {
+            Some(parent) => children[parent].push(i),
+            None => roots.push(i),
+        }
+    }
+
+    struct Walker<'a> {
+        info: &'a [(String, Vec<String>, Status, Option<u64>)],
+        children: &'a [Vec<usize>],
+        seen: Vec<bool>,
+        rows: Vec<DagRow>,
+    }
+    impl Walker<'_> {
+        fn walk(&mut self, i: usize, guides: &str, last: bool, depth: usize) {
+            if self.seen[i] {
+                return;
+            }
+            self.seen[i] = true;
+            let (key, deps, status, dur) = &self.info[i];
+            let prefix = if depth == 0 {
+                String::new()
+            } else {
+                format!("{guides}{}", if last { "└─ " } else { "├─ " })
+            };
+            self.rows.push(DagRow {
+                prefix,
+                key: key.clone(),
+                status: status.clone(),
+                duration: *dur,
+                also_after: deps.iter().skip(1).cloned().collect(),
+            });
+            let next_guides = if depth == 0 {
+                String::new()
+            } else {
+                format!("{guides}{}", if last { "   " } else { "│  " })
+            };
+            let kids = self.children[i].clone();
+            for (n, &c) in kids.iter().enumerate() {
+                self.walk(c, &next_guides, n + 1 == kids.len(), depth + 1);
+            }
+        }
+    }
+    let mut w = Walker {
+        info: &info,
+        children: &children,
+        seen: vec![false; info.len()],
+        rows: Vec::with_capacity(info.len()),
+    };
+    for &r in &roots {
+        w.walk(r, "", true, 0);
+    }
+    // Anything unreached (parent missing from the task list, or a cycle)
+    // still deserves a row.
+    for i in 0..info.len() {
+        if !w.seen[i] {
+            w.walk(i, "", true, 0);
+        }
+    }
+    w.rows
+}
+
 /// Complete output of a run, task by task: the full error, stack trace
 /// and log tail from `jobs get-run-output`. One CLI call per task, so
 /// this is fetched on demand when the user opens the output view.
-pub async fn full_output(cli: &DatabricksCli, run_id: &str) -> String {
+/// The bool is true while the run is still executing, so the output
+/// view can keep tailing.
+pub async fn full_output(cli: &DatabricksCli, run_id: &str) -> (String, bool) {
     let json = match cli.run(&["jobs", "get-run", run_id]).await {
         Ok(v) => v,
-        Err(e) => return format!("✗ {e:#}"),
+        Err(e) => return (format!("✗ {e:#}"), false),
     };
+    let live = matches!(run_status(&json), Status::Running | Status::Pending);
     // Multi-task runs carry per-task run ids; a legacy single-task run
     // is its own task.
     let tasks: Vec<(String, String, Status)> = match json["tasks"].as_array() {
@@ -135,7 +249,7 @@ pub async fn full_output(cli: &DatabricksCli, run_id: &str) -> String {
             }
         }
     }
-    out
+    (out, live)
 }
 
 /// Full detail of one run: state, timing, per-task results, and the
@@ -257,5 +371,37 @@ mod tests {
     fn timeline_tolerates_non_json_and_taskless_runs() {
         assert!(timeline("✗ boom").is_empty());
         assert!(timeline("{}").is_empty());
+    }
+
+    #[test]
+    fn dag_places_tasks_under_first_dependency() {
+        let raw = r#"{"tasks":[
+            {"task_key":"extract","state":{"result_state":"SUCCESS"},"execution_duration":1000},
+            {"task_key":"transform","depends_on":[{"task_key":"extract"}],"state":{"result_state":"SUCCESS"}},
+            {"task_key":"load","depends_on":[{"task_key":"extract"}],"state":{"result_state":"RUNNING"}},
+            {"task_key":"report","depends_on":[{"task_key":"transform"},{"task_key":"load"}],"state":{"life_cycle_state":"BLOCKED"}}
+        ]}"#;
+        let rows = super::dag(raw);
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["extract", "transform", "report", "load"]);
+        assert_eq!(rows[0].prefix, "");
+        assert_eq!(rows[1].prefix, "├─ ");
+        assert_eq!(rows[2].prefix, "│  └─ ");
+        assert_eq!(rows[3].prefix, "└─ ");
+        // report also depends on load, beyond its placement parent.
+        assert_eq!(rows[2].also_after, ["load"]);
+        assert_eq!(rows[0].duration, Some(1000));
+    }
+
+    #[test]
+    fn dag_tolerates_missing_parents_and_bad_json() {
+        assert!(super::dag("nope").is_empty());
+        let raw = r#"{"tasks":[
+            {"task_key":"orphan","depends_on":[{"task_key":"ghost"}],"state":{"result_state":"SUCCESS"}}
+        ]}"#;
+        let rows = super::dag(raw);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "orphan");
+        assert_eq!(rows[0].prefix, "");
     }
 }
