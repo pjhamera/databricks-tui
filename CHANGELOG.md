@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.24.0] - 2026-07-18
 
 ### Added
 - Scrollbars: detail views, run views (summary, raw JSON, output,
