@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.23.0] - 2026-07-18
 
 ### Added
 - Task DAG view: press `d` in a job run to see the tasks as a dependency
