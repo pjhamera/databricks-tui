@@ -23,6 +23,43 @@ pub async fn list(
         .unwrap_or_default())
 }
 
+/// One task's execution window, for the timeline view.
+pub struct TimelineTask {
+    pub key: String,
+    /// Epoch ms; 0 when the task hasn't started.
+    pub start: u64,
+    /// None while the task is still executing.
+    pub end: Option<u64>,
+    pub status: Status,
+}
+
+/// Per-task execution windows parsed from a stored get-run response,
+/// sorted by start time with not-yet-started tasks last.
+pub fn timeline(raw: &str) -> Vec<TimelineTask> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let mut tasks: Vec<TimelineTask> = json["tasks"]
+        .as_array()
+        .map(|ts| {
+            ts.iter()
+                .map(|t| {
+                    let start = t["start_time"].as_u64().unwrap_or(0);
+                    let end = t["end_time"].as_u64().filter(|e| *e > 0 && start > 0);
+                    TimelineTask {
+                        key: t["task_key"].as_str().unwrap_or("?").to_string(),
+                        start,
+                        end,
+                        status: run_status(t),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    tasks.sort_by_key(|t| if t.start == 0 { u64::MAX } else { t.start });
+    tasks
+}
+
 /// Complete output of a run, task by task: the full error, stack trace
 /// and log tail from `jobs get-run-output`. One CLI call per task, so
 /// this is fetched on demand when the user opens the output view.
@@ -192,4 +229,33 @@ pub async fn fetch(cli: &DatabricksCli, run_id: &str) -> (DetailData, bool) {
         },
         live,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timeline;
+    use crate::shape::Status;
+
+    #[test]
+    fn timeline_sorts_by_start_with_unstarted_last() {
+        let raw = r#"{"tasks":[
+            {"task_key":"b","start_time":2000,"end_time":5000,"state":{"result_state":"SUCCESS"}},
+            {"task_key":"c","start_time":0,"state":{"life_cycle_state":"BLOCKED"}},
+            {"task_key":"a","start_time":1000,"end_time":0,"state":{"life_cycle_state":"RUNNING"}}
+        ]}"#;
+        let ts = timeline(raw);
+        let keys: Vec<&str> = ts.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["a", "b", "c"]);
+        // end_time 0 means still executing.
+        assert_eq!(ts[0].end, None);
+        assert!(matches!(ts[0].status, Status::Running));
+        assert_eq!(ts[1].end, Some(5000));
+        assert_eq!(ts[2].start, 0);
+    }
+
+    #[test]
+    fn timeline_tolerates_non_json_and_taskless_runs() {
+        assert!(timeline("✗ boom").is_empty());
+        assert!(timeline("{}").is_empty());
+    }
 }

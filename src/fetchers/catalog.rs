@@ -85,6 +85,32 @@ fn fmt_size(bytes: u64) -> String {
     }
 }
 
+/// Bare object names at one level of the Unity Catalog tree, for SQL
+/// completion: "" → catalogs, "cat" → schemas, "cat.sch" → tables and
+/// views, "cat.sch.tab" → columns.
+pub async fn names(cli: &DatabricksCli, path: &str) -> Result<Vec<String>> {
+    let parts: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+    let json = match parts.as_slice() {
+        [] => cli.run(&["catalogs", "list"]).await?,
+        [catalog] => cli.run(&["schemas", "list", catalog]).await?,
+        [catalog, schema] => cli.run(&["tables", "list", catalog, schema]).await?,
+        _ => {
+            let table = cli.run(&["tables", "get", path]).await?;
+            return Ok(items_of(&table["columns"])
+                .iter()
+                .filter_map(|c| c["name"].as_str().map(str::to_string))
+                .collect());
+        }
+    };
+    let mut names: Vec<String> = items_of(&json)
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(str::to_string))
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup();
+    Ok(names)
+}
+
 /// Lists one level of the Unity Catalog tree:
 /// no path → catalogs, [catalog] → schemas, [catalog, schema] → tables,
 /// views and volumes, deeper → files inside a volume.

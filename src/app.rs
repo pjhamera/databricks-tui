@@ -214,6 +214,112 @@ pub struct SqlConsole {
     pub col: usize,
 }
 
+/// Tab-completion popup over the SQL prompt, backed by lazily-cached
+/// Unity Catalog names.
+pub struct SqlComplete {
+    /// Candidates for the segment being completed; empty while loading.
+    pub items: Vec<String>,
+    /// The candidate currently inserted into the prompt.
+    pub index: usize,
+    /// Char offset in the input where the completed segment starts —
+    /// the popup anchors under it.
+    pub seg_start: usize,
+    /// The typed prefix, restored on esc.
+    prefix: String,
+    /// Dotted context before the segment ("" for a bare word).
+    context: String,
+    /// True while names are being fetched from the workspace.
+    pub loading: bool,
+}
+
+/// Completed alongside catalog names when a bare word is typed.
+const SQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP BY",
+    "ORDER BY",
+    "HAVING",
+    "LIMIT",
+    "JOIN",
+    "LEFT JOIN",
+    "INNER JOIN",
+    "FULL OUTER JOIN",
+    "CROSS JOIN",
+    "ON",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS",
+    "NULL",
+    "DISTINCT",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "UNION",
+    "UNION ALL",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE",
+    "CREATE",
+    "DROP",
+    "ALTER",
+    "SHOW",
+    "DESCRIBE",
+    "EXPLAIN",
+    "WITH",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "BETWEEN",
+    "LIKE",
+    "CAST",
+    "OVER",
+    "PARTITION BY",
+];
+
+/// The dotted identifier ending at the caret: (char offset where its
+/// last segment starts, context path before the last dot, typed prefix).
+fn token_at_cursor(input: &str, cursor: usize) -> (usize, String, String) {
+    let chars: Vec<char> = input.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let mut start = cursor;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || matches!(chars[start - 1], '_' | '.'))
+    {
+        start -= 1;
+    }
+    let token: String = chars[start..cursor].iter().collect();
+    match token.rfind('.') {
+        Some(dot) => {
+            let context = token[..dot].to_string();
+            let prefix = token[dot + 1..].to_string();
+            (start + context.chars().count() + 1, context, prefix)
+        }
+        None => (start, String::new(), token),
+    }
+}
+
+/// The first table referenced by a FROM clause, when fully qualified —
+/// its columns join the candidates for bare words.
+fn from_table(input: &str) -> Option<String> {
+    let pos = input.to_lowercase().find("from ")?;
+    // get(): lowercasing can shift byte offsets in non-ASCII input.
+    let rest = input.get(pos + 5..)?.trim_start();
+    let table: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.'))
+        .collect();
+    (table.matches('.').count() == 2 && !table.ends_with('.')).then_some(table)
+}
+
 /// Where console history lives; one statement per line, oldest first.
 fn history_path() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -305,6 +411,9 @@ pub struct RunView {
     /// Full per-task output/logs, fetched on demand via `o`.
     pub output: Option<String>,
     pub show_output: bool,
+    /// Gantt view of per-task execution windows; sticky across h/l so
+    /// runs can be compared.
+    pub show_timeline: bool,
     fetched_at: Instant,
 }
 
@@ -425,6 +534,13 @@ pub struct App {
     pub help_scroll: u16,
     /// Statement id of the in-flight console query, for cancellation.
     sql_stmt: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+    /// Tab-completion popup state for the SQL prompt.
+    pub sql_complete: Option<SqlComplete>,
+    /// Unity Catalog names for completion, keyed by dotted path ("" →
+    /// catalogs, "cat" → schemas, …). Filled lazily, kept per workspace.
+    uc_names: std::collections::HashMap<String, Vec<String>>,
+    #[allow(clippy::type_complexity)]
+    uc_names_rx: Option<oneshot::Receiver<(String, Result<Vec<String>, String>)>>,
     /// Drilled-into secret scope; None = the scopes listing.
     pub secret_scope: Option<String>,
     secrets_rx: Option<oneshot::Receiver<Result<Shape, String>>>,
@@ -507,6 +623,9 @@ impl App {
             help: false,
             help_scroll: 0,
             sql_stmt: None,
+            sql_complete: None,
+            uc_names: Default::default(),
+            uc_names_rx: None,
             secret_scope: None,
             secrets_rx: None,
             secret_form: None,
@@ -775,6 +894,9 @@ impl App {
         self.failed_seen = Default::default();
         self.jump = None;
         self.sql_stmt = None;
+        self.sql_complete = None;
+        self.uc_names.clear();
+        self.uc_names_rx = None;
         self.restore_warehouse_pref();
 
         Some(Arc::new(DatabricksCli::new(profile_arg)))
@@ -1643,6 +1765,209 @@ impl App {
         self.hist_idx = None;
         self.hist_draft.clear();
         self.hist_search = None;
+        self.sql_complete = None;
+    }
+
+    /// Tab in the SQL prompt: complete catalog / schema / table / column
+    /// names from the workspace, fetching each level once per session.
+    /// A repeat press cycles to the next candidate.
+    pub fn sql_tab(&mut self, cli: &Arc<DatabricksCli>) {
+        match &self.sql_complete {
+            Some(c) if c.loading => return,
+            Some(_) => {
+                self.sql_complete_next(1);
+                return;
+            }
+            None => {}
+        }
+        let Some(console) = &self.sql else {
+            return;
+        };
+        let (seg_start, context, prefix) = token_at_cursor(&console.input, console.cursor);
+        // Which cache entry is missing: column names of the FROM table
+        // matter most for a bare word, then the level being dotted into.
+        let missing = if context.is_empty() {
+            from_table(&console.input)
+                .filter(|fqn| !self.uc_names.contains_key(fqn))
+                .or_else(|| (!self.uc_names.contains_key("")).then(String::new))
+        } else {
+            (!self.uc_names.contains_key(&context)).then(|| context.clone())
+        };
+        let loading = missing.is_some();
+        self.sql_complete = Some(SqlComplete {
+            items: Vec::new(),
+            index: 0,
+            seg_start,
+            prefix,
+            context,
+            loading,
+        });
+        match missing {
+            Some(path) => self.fetch_uc_names(cli, path),
+            None => self.sql_complete_fill(),
+        }
+    }
+
+    /// Builds the candidate list from the cache and inserts the first
+    /// match; single matches complete silently, no popup.
+    fn sql_complete_fill(&mut self) {
+        let Some(console) = &self.sql else {
+            self.sql_complete = None;
+            return;
+        };
+        let input = console.input.clone();
+        let Some(comp) = &self.sql_complete else {
+            return;
+        };
+        let q = comp.prefix.to_lowercase();
+        let mut items: Vec<String> = Vec::new();
+        if comp.context.is_empty() {
+            if let Some(cols) = from_table(&input).and_then(|fqn| self.uc_names.get(&fqn)) {
+                items.extend(
+                    cols.iter()
+                        .filter(|n| n.to_lowercase().starts_with(&q))
+                        .cloned(),
+                );
+            }
+            if let Some(cats) = self.uc_names.get("") {
+                items.extend(
+                    cats.iter()
+                        .filter(|n| n.to_lowercase().starts_with(&q))
+                        .cloned(),
+                );
+            }
+            if !q.is_empty() {
+                items.extend(
+                    SQL_KEYWORDS
+                        .iter()
+                        .filter(|k| k.to_lowercase().starts_with(&q))
+                        .map(|k| k.to_string()),
+                );
+            }
+        } else if let Some(names) = self.uc_names.get(&comp.context) {
+            items.extend(
+                names
+                    .iter()
+                    .filter(|n| n.to_lowercase().starts_with(&q))
+                    .cloned(),
+            );
+        }
+        items.dedup();
+        if items.is_empty() {
+            self.sql_complete = None;
+            self.flash = Some(("no completions".to_string(), Instant::now()));
+            return;
+        }
+        let single = items.len() == 1;
+        if let Some(comp) = &mut self.sql_complete {
+            comp.items = items;
+            comp.index = 0;
+        }
+        self.sql_complete_apply();
+        if single {
+            self.sql_complete = None;
+        }
+    }
+
+    /// Replaces the completed segment with the current candidate.
+    fn sql_complete_apply(&mut self) {
+        let Some(comp) = &self.sql_complete else {
+            return;
+        };
+        let candidate = comp.items[comp.index].clone();
+        let plain = candidate
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | ' '));
+        let text = if plain {
+            candidate
+        } else {
+            format!("`{candidate}`")
+        };
+        self.sql_replace_segment(comp.seg_start, &text);
+    }
+
+    /// Overwrites seg_start..caret with `text`, caret landing at its end.
+    fn sql_replace_segment(&mut self, seg_start: usize, text: &str) {
+        if let Some(console) = &mut self.sql {
+            let from = byte_at(&console.input, seg_start);
+            let to = byte_at(&console.input, console.cursor);
+            console.input.replace_range(from..to, text);
+            console.cursor = seg_start + text.chars().count();
+        }
+    }
+
+    /// Tab / shift+tab with the popup open: cycle candidates.
+    pub fn sql_complete_next(&mut self, delta: i32) {
+        let Some(comp) = &mut self.sql_complete else {
+            return;
+        };
+        if comp.items.is_empty() {
+            return;
+        }
+        let n = comp.items.len() as i32;
+        comp.index = (comp.index as i32 + delta).rem_euclid(n) as usize;
+        self.sql_complete_apply();
+    }
+
+    /// Esc: restore the typed prefix and close the popup.
+    pub fn sql_complete_cancel(&mut self) {
+        if let Some(comp) = &self.sql_complete {
+            let (seg_start, prefix) = (comp.seg_start, comp.prefix.clone());
+            self.sql_replace_segment(seg_start, &prefix);
+        }
+        self.sql_complete = None;
+    }
+
+    /// Keeps the inserted candidate and closes the popup.
+    pub fn sql_complete_accept(&mut self) {
+        self.sql_complete = None;
+    }
+
+    fn fetch_uc_names(&mut self, cli: &Arc<DatabricksCli>, path: String) {
+        let (tx, rx) = oneshot::channel();
+        self.uc_names_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let names = fetchers::catalog::names(&cli, &path)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send((path, names));
+        });
+    }
+
+    /// Caches fetched completion names and fills the waiting popup.
+    pub fn poll_uc_names(&mut self) -> bool {
+        let Some(rx) = &mut self.uc_names_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok((path, result)) => {
+                self.uc_names_rx = None;
+                match result {
+                    Ok(names) => {
+                        self.uc_names.insert(path, names);
+                        if self.sql_complete.as_ref().is_some_and(|c| c.loading) {
+                            if let Some(c) = &mut self.sql_complete {
+                                c.loading = false;
+                            }
+                            self.sql_complete_fill();
+                        }
+                    }
+                    Err(e) => {
+                        self.sql_complete = None;
+                        let first = e.lines().next().unwrap_or("fetch failed").to_string();
+                        self.flash = Some((format!("✗ completions: {first}"), Instant::now()));
+                    }
+                }
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.uc_names_rx = None;
+                self.sql_complete = None;
+                true
+            }
+        }
     }
 
     /// The statement currently in the prompt.
@@ -2311,6 +2636,7 @@ impl App {
             live: false,
             output: None,
             show_output: false,
+            show_timeline: false,
             fetched_at: Instant::now(),
         });
         let (tx, rx) = oneshot::channel();
@@ -2473,6 +2799,22 @@ impl App {
                 "--rerun-all-failed-tasks".to_string(),
             ],
         });
+    }
+
+    /// `t` in the run view: per-task execution timeline of a job run.
+    pub fn run_toggle_timeline(&mut self) {
+        let Some(rv) = &mut self.run_view else {
+            return;
+        };
+        if rv.panel != Panel::Jobs {
+            self.flash = Some((
+                "✗ timeline is for job runs — pipeline events are already inline".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        rv.show_timeline = !rv.show_timeline;
+        rv.scroll = 0;
     }
 
     pub fn run_toggle_raw(&mut self) {
@@ -2985,5 +3327,53 @@ impl App {
             changed = true;
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{from_table, token_at_cursor};
+
+    #[test]
+    fn token_bare_word() {
+        let (start, ctx, prefix) = token_at_cursor("SELECT * FROM ma", 16);
+        assert_eq!((start, ctx.as_str(), prefix.as_str()), (14, "", "ma"));
+    }
+
+    #[test]
+    fn token_dotted_path() {
+        let (start, ctx, prefix) = token_at_cursor("SELECT * FROM main.sales.or", 27);
+        assert_eq!(
+            (start, ctx.as_str(), prefix.as_str()),
+            (25, "main.sales", "or")
+        );
+    }
+
+    #[test]
+    fn token_trailing_dot() {
+        let (start, ctx, prefix) = token_at_cursor("main.", 5);
+        assert_eq!((start, ctx.as_str(), prefix.as_str()), (5, "main", ""));
+    }
+
+    #[test]
+    fn token_mid_input() {
+        // Caret inside the statement, not at the end.
+        let (start, ctx, prefix) = token_at_cursor("SELECT co FROM t", 9);
+        assert_eq!((start, ctx.as_str(), prefix.as_str()), (7, "", "co"));
+    }
+
+    #[test]
+    fn from_table_fully_qualified() {
+        assert_eq!(
+            from_table("SELECT x FROM main.sales.orders WHERE x > 1").as_deref(),
+            Some("main.sales.orders")
+        );
+    }
+
+    #[test]
+    fn from_table_rejects_partial_names() {
+        assert_eq!(from_table("SELECT x FROM orders"), None);
+        assert_eq!(from_table("SELECT x FROM main.sales."), None);
+        assert_eq!(from_table("SELECT 1"), None);
     }
 }

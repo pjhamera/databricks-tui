@@ -1,5 +1,5 @@
 use crate::app::{App, Panel, ThemeMode};
-use crate::shape::{Shape, Status, TableData};
+use crate::shape::{DetailData, Shape, Status, TableData};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -224,6 +224,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.sql.is_some() {
         draw_sql(f, root[1], app, &p);
+        if app.sql_complete.is_some() {
+            draw_sql_complete(f, root[1], app, &p);
+        }
         // Running a query may pop the warehouse picker over the console.
         if app.wh_picker.is_some() {
             draw_wh_picker(f, root[1], app, &p);
@@ -575,6 +578,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("enter", "job/pipeline detail → latest run/update"),
                 ("h / l", "older / newer run"),
                 ("o", "full task output: error, trace, log tail"),
+                ("t", "timeline: per-task Gantt of the run"),
                 ("r", "repair a failed run — reruns only failed tasks"),
                 ("s", "cancel the shown run"),
                 ("j / k, J", "scroll · toggle raw JSON"),
@@ -603,6 +607,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             "SQL console",
             &[
                 ("enter", "run the statement"),
+                ("tab", "complete catalog/schema/table/column names"),
                 ("↑ / ↓, ctrl+r", "history · incremental search"),
                 ("ctrl+x", "compose in $EDITOR"),
                 ("ctrl+s", "export results to CSV"),
@@ -1346,6 +1351,70 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     }
 }
 
+/// Tab-completion popup, anchored under the segment being completed.
+fn draw_sql_complete(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let (Some(console), Some(comp)) = (&app.sql, &app.sql_complete) else {
+        return;
+    };
+    // Mirror the prompt geometry from draw_sql to find the anchor column.
+    let inner_w = area.width.saturating_sub(4) as usize;
+    let hscroll = (console.cursor + 3).saturating_sub(inner_w);
+    let anchor = (area.x as usize + 4 + comp.seg_start.saturating_sub(hscroll)) as u16;
+
+    let lines: Vec<Line> = if comp.loading {
+        vec![Line::from(Span::styled(
+            format!("{} fetching names…", app.spinner()),
+            Style::default().fg(p.warn),
+        ))]
+    } else {
+        // Keep the highlighted candidate inside the window.
+        let visible = 8.min(comp.items.len());
+        let skip = comp.index.saturating_sub(visible.saturating_sub(1));
+        comp.items
+            .iter()
+            .enumerate()
+            .skip(skip)
+            .take(visible)
+            .map(|(i, item)| {
+                let style = if i == comp.index {
+                    Style::default()
+                        .fg(p.key)
+                        .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.text)
+                };
+                Line::from(Span::styled(format!(" {item} "), style))
+            })
+            .collect()
+    };
+    let widest = comp
+        .items
+        .iter()
+        .map(|i| i.chars().count())
+        .max()
+        .unwrap_or(16);
+    let width = (widest as u16 + 4).clamp(20, 44).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(3));
+    let popup = Rect {
+        x: anchor.min(area.x + area.width.saturating_sub(width)),
+        y: area.y + 3,
+        width,
+        height,
+    };
+    let title = if comp.loading {
+        String::new()
+    } else {
+        format!(" {}/{} ", comp.index + 1, comp.items.len())
+    };
+    let block = Block::default()
+        .title(Span::styled(title, Style::default().fg(p.dim)))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.key));
+    f.render_widget(Clear, popup);
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
 /// Natural display width of each column in `cols`: the widest of header
 /// and sampled cells, clamped so one huge value can't eat the pane.
 fn grid_widths(data: &TableData, cols: &[usize]) -> Vec<u16> {
@@ -1657,6 +1726,12 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
         ));
     }
+    if rv.show_timeline {
+        title_spans.push(Span::styled(
+            "· timeline ",
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
     let block = Block::default()
         .title(Line::from(title_spans))
         .borders(Borders::ALL)
@@ -1690,6 +1765,11 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         f.render_widget(par, area);
         return;
     };
+
+    if rv.show_timeline {
+        draw_run_timeline(f, area, rv.scroll, data, block, p);
+        return;
+    }
 
     if rv.show_raw || data.summary.is_empty() {
         let par = Paragraph::new(data.raw.as_str())
@@ -1737,6 +1817,102 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         }
     }
     let par = Paragraph::new(lines).scroll((rv.scroll, 0)).block(block);
+    f.render_widget(par, area);
+}
+
+/// Gantt chart of a job run: one bar per task on a shared time axis,
+/// colored by state, so the long pole is visible at a glance.
+fn draw_run_timeline(
+    f: &mut Frame,
+    area: Rect,
+    scroll: u16,
+    data: &DetailData,
+    block: Block,
+    p: &Palette,
+) {
+    let tasks = crate::fetchers::runs::timeline(&data.raw);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let t0 = tasks.iter().filter(|t| t.start > 0).map(|t| t.start).min();
+    let Some(t0) = t0 else {
+        let par = Paragraph::new(
+            "no per-task timing recorded — legacy single-task runs carry none (J shows the raw JSON)",
+        )
+        .style(Style::default().fg(p.dim))
+        .wrap(Wrap { trim: false })
+        .block(block);
+        f.render_widget(par, area);
+        return;
+    };
+    let t1 = tasks
+        .iter()
+        .filter(|t| t.start > 0)
+        .map(|t| t.end.unwrap_or(now).max(t.start))
+        .max()
+        .unwrap_or(t0);
+    let span = (t1 - t0).max(1);
+
+    let name_w = tasks
+        .iter()
+        .map(|t| t.key.chars().count())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 24);
+    let inner_w = area.width.saturating_sub(4) as usize;
+    // Room for the widest duration ("59m 59s…" = 8) after the bar.
+    let bar_w = inner_w.saturating_sub(name_w + 2 + 9).max(10);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(
+                "◷ {} task{} · span {}",
+                tasks.len(),
+                if tasks.len() == 1 { "" } else { "s" },
+                crate::shape::fmt_duration_ms(span)
+            ),
+            Style::default().fg(p.dim),
+        )),
+        Line::default(),
+    ];
+    for t in &tasks {
+        let mut key: String = t.key.chars().take(name_w).collect();
+        if key.len() < t.key.len() {
+            key.pop();
+            key.push('…');
+        }
+        let name = Span::styled(format!("{key:<name_w$}  "), Style::default().fg(p.text));
+        if t.start == 0 {
+            lines.push(Line::from(vec![
+                name,
+                Span::styled(
+                    format!("– {}", t.status.label().to_lowercase()),
+                    Style::default().fg(p.dim),
+                ),
+            ]));
+            continue;
+        }
+        let end = t.end.unwrap_or(now).max(t.start);
+        let off = ((t.start - t0) as f64 / span as f64 * bar_w as f64) as usize;
+        let len = (((end - t.start) as f64 / span as f64) * bar_w as f64).round() as usize;
+        let len = len.clamp(1, bar_w.saturating_sub(off).max(1));
+        let dur = format!(
+            " {}{}",
+            crate::shape::fmt_duration_ms(end - t.start),
+            if t.end.is_none() { "…" } else { "" }
+        );
+        lines.push(Line::from(vec![
+            name,
+            Span::styled(" ".repeat(off), Style::default()),
+            Span::styled(
+                "█".repeat(len),
+                Style::default().fg(status_color(&t.status, p)),
+            ),
+            Span::styled(dur, Style::default().fg(p.dim)),
+        ]));
+    }
+    let par = Paragraph::new(lines).scroll((scroll, 0)).block(block);
     f.render_widget(par, area);
 }
 
@@ -1988,6 +2164,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 dim(" "),
                 key("enter"),
                 dim(" run   "),
+                key("tab"),
+                dim(" complete   "),
                 key("↑"),
                 dim("/"),
                 key("↓"),
@@ -2092,6 +2270,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             if rv.panel == Panel::Jobs {
                 spans.push(key("o"));
                 spans.push(dim(" output   "));
+                spans.push(key("t"));
+                spans.push(dim(" timeline   "));
                 spans.push(key("r"));
                 spans.push(dim(" repair   "));
             }

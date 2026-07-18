@@ -29,7 +29,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   `SELECT * FROM catalog.schema.table LIMIT 100`, ready to edit; ↑/↓ cycle
   through past statements (persisted in ~/.config/databricks-tui/history),
   Ctrl+R searches them incrementally, Ctrl+X composes multi-line SQL in
-  your $EDITOR, and Ctrl+S exports results to CSV — previews export with `e`
+  your $EDITOR, and Ctrl+S exports results to CSV — previews export with `e`;
+  Tab completes catalog, schema, table and column names straight from Unity
+  Catalog (plus SQL keywords), fetched lazily and cached for the session
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit — and when a new
   failure appears between refreshes, the footer flashes it (with a
@@ -42,6 +44,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Debug failed runs without leaving the terminal: `o` in a run view
   shows every task's full error, stack trace and log tail, and `r`
   repairs the run — rerunning only the tasks that failed
+- Run timeline (`t` in a run view): every task's execution window as a
+  Gantt bar on a shared time axis, colored by state — see at a glance
+  what ran in parallel and which task ate the runtime
 - Wide tables stay readable: previews render natural column widths and
   page with `←`/`→`, `/` filters columns by name, and `v` flips to a
   record view (one row, fields stacked) — the way through a
@@ -148,12 +153,13 @@ them can be slow on busy workspaces.
 | `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
 | `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
-| `:` | SQL console: run any statement on a warehouse; `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Shift+←`/`→` page columns, `Ctrl+S` export CSV |
+| `:` | SQL console: run any statement on a warehouse; `Tab` completes names from Unity Catalog, `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Shift+←`/`→` page columns, `Ctrl+S` export CSV |
 | `!` | Problems: everything failing across panes; `Enter` jumps to the item |
 | `Ctrl+P` | Command palette: fuzzy-search everything loaded, `Enter` jumps to it |
 | `s` (run view) | Cancel the shown run / stop the pipeline update |
 | `o` (run view) | Full task output: error, stack trace and log tail per task |
 | `r` (run view) | Repair a failed run — reruns only the failed tasks |
+| `t` (run view) | Timeline: per-task Gantt of the run on a shared time axis |
 | `a` / `x` (secrets pane) | Create scope or add secret (masked) / delete with confirm |
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse); `←`/`→` page columns, `/` filters columns, `v` record view, `e` exports CSV |

@@ -232,6 +232,9 @@ async fn run(
         if app.poll_sql() {
             needs_redraw = true;
         }
+        if app.poll_uc_names() {
+            needs_redraw = true;
+        }
         if app.poll_run(&cli) {
             needs_redraw = true;
         }
@@ -416,6 +419,26 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.sql.is_some() && app.sql_complete.is_some() {
+                    // Completion popup: tab cycles, esc reverts, anything
+                    // else keeps the insertion and falls back to typing.
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Tab, _) | (KeyCode::Down, _) => app.sql_complete_next(1),
+                        (KeyCode::BackTab, _) | (KeyCode::Up, _) => app.sql_complete_next(-1),
+                        (KeyCode::Esc, _) => app.sql_complete_cancel(),
+                        (KeyCode::Enter, _) => app.sql_complete_accept(),
+                        (KeyCode::Backspace, _) => {
+                            app.sql_complete_accept();
+                            app.sql_pop();
+                        }
+                        (KeyCode::Char(ch), _) => {
+                            app.sql_complete_accept();
+                            app.sql_push(ch);
+                        }
+                        _ => app.sql_complete_accept(),
+                    }
+                    needs_redraw = true;
                 } else if app.sql.is_some() && app.hist_search.is_some() {
                     // Ctrl+R incremental search over past statements.
                     match (key.code, key.modifiers) {
@@ -446,6 +469,7 @@ async fn run(
                         }
                         (KeyCode::Esc, _) => app.close_sql(),
                         (KeyCode::Enter, _) => app.sql_run(&cli),
+                        (KeyCode::Tab, _) => app.sql_tab(&cli),
                         (KeyCode::Backspace, _) => app.sql_pop(),
                         (KeyCode::Delete, _) => app.sql_delete(),
                         (KeyCode::Left, KeyModifiers::SHIFT) => app.sql_cols(-1),
@@ -515,11 +539,18 @@ async fn run(
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             break
                         }
-                        // Esc closes the output view first, then the run.
+                        // Esc closes the output view first, then the
+                        // timeline, then the run.
                         (KeyCode::Esc, _)
                             if app.run_view.as_ref().is_some_and(|rv| rv.show_output) =>
                         {
                             app.run_toggle_output(&cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Esc, _)
+                            if app.run_view.as_ref().is_some_and(|rv| rv.show_timeline) =>
+                        {
+                            app.run_toggle_timeline();
                             needs_redraw = true;
                         }
                         (KeyCode::Esc, _) => {
@@ -548,6 +579,10 @@ async fn run(
                         }
                         (KeyCode::Char('o'), _) => {
                             app.run_toggle_output(&cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('t'), _) => {
+                            app.run_toggle_timeline();
                             needs_redraw = true;
                         }
                         (KeyCode::Char('r'), _) => {
