@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-18
+
 ### Added
 - Tab autocomplete in the SQL console: completes catalog, schema, table, and
   column names from Unity Catalog (fetched lazily, cached per session), plus
