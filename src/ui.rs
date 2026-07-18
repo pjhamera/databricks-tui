@@ -1,12 +1,12 @@
 use crate::app::{App, Panel, ThemeMode};
 use crate::shape::{DetailData, Shape, Status, TableData};
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph,
-        Row, Table, Wrap,
+        Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Wrap,
     },
     Frame,
 };
@@ -639,10 +639,20 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         }
         lines.push(Line::default());
     }
+    let total = lines.len();
     let par = Paragraph::new(lines)
         .scroll((app.help_scroll, 0))
         .block(block);
     f.render_widget(par, popup);
+    // Viewport loses the borders plus the block's one line of top padding.
+    scrollbar(
+        f,
+        popup,
+        total,
+        popup.height.saturating_sub(3) as usize,
+        app.help_scroll as usize,
+        p,
+    );
 }
 
 fn draw_jump(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -1465,6 +1475,15 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .column_spacing(1)
                 .block(results_block);
             f.render_widget(table, parts[1]);
+            // Borders plus the header row eat three lines of the viewport.
+            scrollbar(
+                f,
+                parts[1],
+                data.rows.len(),
+                parts[1].height.saturating_sub(3) as usize,
+                console.scroll,
+                p,
+            );
         }
     }
 }
@@ -1681,10 +1700,19 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                         ])
                     })
                     .collect();
+                let total = lines.len();
                 let par = Paragraph::new(lines)
                     .scroll((pv.rscroll, 0))
                     .block(make_block(title_spans));
                 f.render_widget(par, area);
+                scrollbar(
+                    f,
+                    area,
+                    total,
+                    area.height.saturating_sub(2) as usize,
+                    pv.rscroll as usize,
+                    p,
+                );
                 return;
             }
             let avail = area.width.saturating_sub(4) as usize; // borders + padding
@@ -1731,6 +1759,15 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .column_spacing(1)
                 .block(make_block(title_spans));
             f.render_widget(table, area);
+            // Borders plus the header row eat three lines of the viewport.
+            scrollbar(
+                f,
+                area,
+                data.rows.len(),
+                area.height.saturating_sub(3) as usize,
+                pv.scroll,
+                p,
+            );
         }
     }
 }
@@ -1768,6 +1805,15 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             .scroll((d.scroll, 0))
             .block(block);
         f.render_widget(par, area);
+        let total = wrapped_height(&data.raw, area.width.saturating_sub(4) as usize);
+        scrollbar(
+            f,
+            area,
+            total,
+            area.height.saturating_sub(2) as usize,
+            d.scroll as usize,
+            p,
+        );
         return;
     }
 
@@ -1803,8 +1849,17 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             }
         }
     }
+    let total = lines.len();
     let par = Paragraph::new(lines).scroll((d.scroll, 0)).block(block);
     f.render_widget(par, area);
+    scrollbar(
+        f,
+        area,
+        total,
+        area.height.saturating_sub(2) as usize,
+        d.scroll as usize,
+        p,
+    );
 }
 
 fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -1870,11 +1925,13 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     // Full task output/logs, layered over the run detail.
     if rv.show_output {
         let par = match &rv.output {
-            Some(text) => Paragraph::new(text.as_str())
-                .style(Style::default().fg(p.text))
-                .wrap(Wrap { trim: false })
-                .scroll((rv.scroll, 0))
-                .block(block),
+            Some(text) => {
+                let lines: Vec<Line> = text.lines().map(|l| output_line(l, p)).collect();
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .scroll((rv.scroll, 0))
+                    .block(block)
+            }
             None => Paragraph::new(format!(
                 "{} fetching task output — one call per task…",
                 app.spinner()
@@ -1883,6 +1940,17 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             .block(block),
         };
         f.render_widget(par, area);
+        if let Some(text) = &rv.output {
+            let total = wrapped_height(text, area.width.saturating_sub(4) as usize);
+            scrollbar(
+                f,
+                area,
+                total,
+                area.height.saturating_sub(2) as usize,
+                rv.scroll as usize,
+                p,
+            );
+        }
         return;
     }
 
@@ -1911,6 +1979,15 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             .scroll((rv.scroll, 0))
             .block(block);
         f.render_widget(par, area);
+        let total = wrapped_height(&data.raw, area.width.saturating_sub(4) as usize);
+        scrollbar(
+            f,
+            area,
+            total,
+            area.height.saturating_sub(2) as usize,
+            rv.scroll as usize,
+            p,
+        );
         return;
     }
 
@@ -1949,8 +2026,17 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             }
         }
     }
+    let total = lines.len();
     let par = Paragraph::new(lines).scroll((rv.scroll, 0)).block(block);
     f.render_widget(par, area);
+    scrollbar(
+        f,
+        area,
+        total,
+        area.height.saturating_sub(2) as usize,
+        rv.scroll as usize,
+        p,
+    );
 }
 
 /// Gantt chart of a job run: one bar per task on a shared time axis,
@@ -2045,8 +2131,17 @@ fn draw_run_timeline(
             Span::styled(dur, Style::default().fg(p.dim)),
         ]));
     }
+    let total = lines.len();
     let par = Paragraph::new(lines).scroll((scroll, 0)).block(block);
     f.render_widget(par, area);
+    scrollbar(
+        f,
+        area,
+        total,
+        area.height.saturating_sub(2) as usize,
+        scroll as usize,
+        p,
+    );
 }
 
 /// Dependency tree of a job run's tasks: each task under the task it
@@ -2105,8 +2200,17 @@ fn draw_run_dag(
         }
         lines.push(Line::from(spans));
     }
+    let total = lines.len();
     let par = Paragraph::new(lines).scroll((scroll, 0)).block(block);
     f.render_widget(par, area);
+    scrollbar(
+        f,
+        area,
+        total,
+        area.height.saturating_sub(2) as usize,
+        scroll as usize,
+        p,
+    );
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -2654,6 +2758,15 @@ fn draw_panel(
     p: &Palette,
 ) {
     let accent = accent(panel, p);
+    // Unfocused panes keep their status colors (the cross-pane signal)
+    // but their text steps back so the active pane pops.
+    let dimmed = |s: Style| {
+        if focused {
+            s
+        } else {
+            s.add_modifier(Modifier::DIM)
+        }
+    };
     let (border_style, title_style) = if focused {
         (
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
@@ -2764,7 +2877,7 @@ fn draw_panel(
                     };
                     let mut spans = vec![
                         Span::styled("● ", Style::default().fg(color)),
-                        Span::styled(item.name.as_str(), Style::default().fg(p.text)),
+                        Span::styled(item.name.as_str(), dimmed(Style::default().fg(p.text))),
                         Span::raw("  "),
                         chip,
                     ];
@@ -2780,7 +2893,7 @@ fn draw_panel(
                     if let Some(detail) = &item.detail {
                         spans.push(Span::styled(
                             format!("  {}", detail),
-                            Style::default().fg(p.dim),
+                            dimmed(Style::default().fg(p.dim)),
                         ));
                     }
                     ListItem::new(Line::from(spans))
@@ -2809,7 +2922,13 @@ fn draw_panel(
             let rows: Vec<Row> = data
                 .rows
                 .iter()
-                .map(|r| Row::new(r.iter().map(|c| Cell::from(c.as_str())).collect::<Vec<_>>()))
+                .map(|r| {
+                    Row::new(
+                        r.iter()
+                            .map(|c| Cell::from(c.as_str()).style(dimmed(Style::default())))
+                            .collect::<Vec<_>>(),
+                    )
+                })
                 .collect();
             let widths: Vec<Constraint> = data
                 .headers
@@ -2822,18 +2941,123 @@ fn draw_panel(
         Some(Shape::Badge(b)) => {
             let text = format!("{}: {}", b.label, b.value);
             let par = Paragraph::new(text)
-                .style(Style::default().fg(p.text))
+                .style(dimmed(Style::default().fg(p.text)))
                 .block(block);
             f.render_widget(par, area);
         }
         Some(Shape::Text(t)) => {
             let color = if t.starts_with('✗') { p.err } else { p.text };
             let par = Paragraph::new(t.as_str())
-                .style(Style::default().fg(color))
+                .style(dimmed(Style::default().fg(color)))
                 .wrap(Wrap { trim: false })
                 .block(block);
             f.render_widget(par, area);
         }
+    }
+}
+
+/// Vertical scrollbar on the right border of a bordered block when the
+/// content overflows the viewport; `total` and `pos` are in rendered
+/// lines (or rows).
+fn scrollbar(f: &mut Frame, area: Rect, total: usize, viewport: usize, pos: usize, p: &Palette) {
+    if viewport == 0 || total <= viewport {
+        return;
+    }
+    let max = total - viewport;
+    let mut state = ScrollbarState::new(max).position(pos.min(max));
+    let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .track_style(Style::default().fg(p.border))
+        .thumb_symbol("┃")
+        .thumb_style(Style::default().fg(p.text));
+    f.render_stateful_widget(
+        sb,
+        area.inner(Margin {
+            horizontal: 0,
+            vertical: 1,
+        }),
+        &mut state,
+    );
+}
+
+/// Rendered height of text wrapped at `width` columns.
+fn wrapped_height(text: &str, width: usize) -> usize {
+    let w = width.max(1);
+    text.lines()
+        .map(|l| l.chars().count().div_ceil(w).max(1))
+        .sum()
+}
+
+/// One rendered line of task output: section headers stand out, error
+/// and warning lines are tinted, leading timestamps are dimmed so the
+/// message carries the color.
+fn output_line<'a>(line: &'a str, p: &Palette) -> Line<'a> {
+    if let Some(rest) = line.strip_prefix("── ") {
+        let color = if rest.contains("FAILED") {
+            p.err
+        } else if rest.contains("RUNNING") || rest.contains("PENDING") {
+            p.warn
+        } else if rest.contains("SUCCESS") {
+            p.ok
+        } else {
+            p.text
+        };
+        return Line::from(Span::styled(
+            line,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let trimmed = line.trim_start();
+    let indented = line.starts_with(char::is_whitespace);
+    let body = if line.contains("ERROR")
+        || line.contains("FATAL")
+        || line.contains("Exception")
+        || trimmed.starts_with("Traceback")
+        || trimmed.starts_with("Caused by")
+        || (indented && (trimmed.starts_with("at ") || trimmed.starts_with("File \"")))
+    {
+        Style::default().fg(p.err)
+    } else if line.contains("WARN") {
+        Style::default().fg(p.warn)
+    } else if line == "logs (tail):" || trimmed.starts_with("(no output") {
+        Style::default().fg(p.dim)
+    } else {
+        Style::default().fg(p.text)
+    };
+    let ts = timestamp_prefix(line);
+    if ts > 0 {
+        Line::from(vec![
+            Span::styled(&line[..ts], Style::default().fg(p.dim)),
+            Span::styled(&line[ts..], body),
+        ])
+    } else {
+        Line::from(Span::styled(line, body))
+    }
+}
+
+/// Byte length of a leading timestamp-ish prefix ("26/07/18 12:34:56 ",
+/// ISO dates), 0 when there is none. Requires enough digits that plain
+/// leading numbers don't get dimmed.
+fn timestamp_prefix(line: &str) -> usize {
+    let mut len = 0;
+    let mut digits = 0;
+    for (i, c) in line.char_indices() {
+        if c.is_ascii_digit() {
+            digits += 1;
+        } else if !matches!(c, '/' | '-' | ':' | '.' | ',' | 'T' | 'Z' | ' ') {
+            break;
+        }
+        len = i + c.len_utf8();
+        if len >= 30 {
+            break;
+        }
+    }
+    if digits >= 6 && len >= 8 {
+        len
+    } else {
+        0
     }
 }
 

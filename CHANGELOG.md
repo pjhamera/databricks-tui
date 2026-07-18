@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Scrollbars: detail views, run views (summary, raw JSON, output,
+  timeline, DAG), SQL results, table previews and the help overlay show
+  a scrollbar on the right border when content overflows
+- Colorized run output: section headers are tinted by task state, error
+  lines (ERROR, exceptions, stack frames) red, WARN lines yellow, and
+  leading log timestamps dimmed so the message carries the color
+
+### Changed
+- Unfocused panes dim their text (names, details, table rows) while
+  keeping status colors, so the focused pane stands out at a glance
+
 ## [0.23.0] - 2026-07-18
 
 ### Added

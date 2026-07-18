@@ -42,8 +42,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   Esc on a running SQL statement cancels it server-side instead of
   leaving it burning the warehouse
 - Debug failed runs without leaving the terminal: `o` in a run view
-  shows every task's full error, stack trace and log tail, and `r`
-  repairs the run — rerunning only the tasks that failed; on a running
+  shows every task's full error, stack trace and log tail — colorized,
+  with error lines red, warnings yellow and timestamps dimmed — and `r`
+  repairs the run, rerunning only the tasks that failed; on a running
   run the output view keeps tailing, so errors stream in as tasks finish
 - Run timeline (`t` in a run view): every task's execution window as a
   Gantt bar on a shared time axis, colored by state — see at a glance
@@ -84,7 +85,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   scopes, add secrets (values masked while typing, never displayed),
   delete with confirmation, and inspect scope ACLs with `g`
 - Switch between workspaces (CLI profiles) without restarting
-- Zoom into any pane, non-blocking refresh — the UI never freezes
+- Zoom into any pane, non-blocking refresh — the UI never freezes;
+  scrollbars mark your place in long output, and unfocused panes dim
+  slightly so the active one is obvious at a glance
 - Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
   Gruvbox, Dracula, Nord and Tokyo Night — `t` cycles, `--theme` picks at
   launch, and the app remembers your theme and warehouse choice per profile
