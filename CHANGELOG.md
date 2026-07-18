@@ -9,6 +9,9 @@
 - Colorized run output: section headers are tinted by task state, error
   lines (ERROR, exceptions, stack frames) red, WARN lines yellow, and
   leading log timestamps dimmed so the message carries the color
+- SQL syntax highlighting in the console prompt (and history search):
+  keywords bold, strings green, numbers yellow, quoted identifiers
+  orange, comments dimmed — live as you type
 
 ### Changed
 - Unfocused panes dim their text (names, details, table rows) while

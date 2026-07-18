@@ -232,8 +232,9 @@ pub struct SqlComplete {
     pub loading: bool,
 }
 
-/// Completed alongside catalog names when a bare word is typed.
-const SQL_KEYWORDS: &[&str] = &[
+/// Completed alongside catalog names when a bare word is typed; also
+/// the word list for prompt syntax highlighting.
+pub(crate) const SQL_KEYWORDS: &[&str] = &[
     "SELECT",
     "FROM",
     "WHERE",

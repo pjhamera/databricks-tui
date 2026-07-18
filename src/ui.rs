@@ -1336,16 +1336,16 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             .hist_search_current()
             .map(|s| s.replace('\n', " "))
             .unwrap_or_default();
-        let prompt = Paragraph::new(Line::from(vec![
+        let mut spans = vec![
             Span::styled("(reverse-i-search)`", Style::default().fg(p.dim)),
             Span::styled(
                 query.as_str(),
                 Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
             ),
             Span::styled("`: ", Style::default().fg(p.dim)),
-            Span::styled(matched, Style::default().fg(p.text)),
-        ]))
-        .block(prompt_block);
+        ];
+        spans.extend(sql_spans(&matched, p));
+        let prompt = Paragraph::new(Line::from(spans)).block(prompt_block);
         f.render_widget(prompt, parts[0]);
     } else {
         // Caret sits at the cursor, not the end; long inputs scroll so
@@ -1360,14 +1360,15 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         let (before, after) = console.input.split_at(caret_byte);
         let inner_w = parts[0].width.saturating_sub(4) as usize; // borders + padding
         let hscroll = (console.cursor + 3).saturating_sub(inner_w) as u16;
-        let prompt = Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(p.key)),
-            Span::styled(before.replace('\n', " "), Style::default().fg(p.text)),
-            Span::styled("▏", Style::default().fg(p.warn)),
-            Span::styled(after.replace('\n', " "), Style::default().fg(p.text)),
-        ]))
-        .scroll((0, hscroll))
-        .block(prompt_block);
+        // Highlight each side of the caret separately — a token split by
+        // the caret loses its color for a keystroke, which is fine.
+        let mut spans = vec![Span::styled("❯ ", Style::default().fg(p.key))];
+        spans.extend(sql_spans(&before.replace('\n', " "), p));
+        spans.push(Span::styled("▏", Style::default().fg(p.warn)));
+        spans.extend(sql_spans(&after.replace('\n', " "), p));
+        let prompt = Paragraph::new(Line::from(spans))
+            .scroll((0, hscroll))
+            .block(prompt_block);
         f.render_widget(prompt, parts[0]);
     }
 
@@ -2990,6 +2991,100 @@ fn wrapped_height(text: &str, width: usize) -> usize {
         .sum()
 }
 
+/// Words highlighted as keywords in the SQL prompt beyond the
+/// autocomplete list.
+const SQL_EXTRA_KEYWORDS: &[&str] = &[
+    "TABLE", "VIEW", "IF", "EXISTS", "USE", "TRUE", "FALSE", "ASC", "DESC", "INTERVAL",
+];
+
+fn is_sql_keyword(word: &str) -> bool {
+    let up = word.to_ascii_uppercase();
+    crate::app::SQL_KEYWORDS
+        .iter()
+        .any(|k| k.split_whitespace().any(|w| w == up))
+        || SQL_EXTRA_KEYWORDS.contains(&up.as_str())
+}
+
+/// SQL tokenized into styled spans for the console prompt: keywords,
+/// strings, quoted identifiers, numbers and comments each get a color.
+/// Char counts are preserved so the caret and hscroll math hold.
+fn sql_spans(sql: &str, p: &Palette) -> Vec<Span<'static>> {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    let push = |spans: &mut Vec<Span<'static>>, text: String, style: Style| {
+        if !text.is_empty() {
+            spans.push(Span::styled(text, style));
+        }
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' || c == '`' || c == '"' {
+            // String or quoted identifier — runs to the closing quote,
+            // or to the end while still being typed.
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != c {
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1;
+            }
+            let color = if c == '\'' { p.ok } else { p.catalog };
+            push(
+                &mut spans,
+                chars[start..i].iter().collect(),
+                Style::default().fg(color),
+            );
+        } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+            push(
+                &mut spans,
+                chars[i..].iter().collect(),
+                Style::default().fg(p.dim),
+            );
+            break;
+        } else if c.is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '.') {
+                i += 1;
+            }
+            push(
+                &mut spans,
+                chars[start..i].iter().collect(),
+                Style::default().fg(p.warn),
+            );
+        } else if c.is_alphanumeric() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let style = if is_sql_keyword(&word) {
+                Style::default().fg(p.key).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
+            };
+            push(&mut spans, word, style);
+        } else {
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                if c.is_alphanumeric() || matches!(c, '_' | '\'' | '`' | '"' | '-') {
+                    break;
+                }
+                i += 1;
+            }
+            push(
+                &mut spans,
+                chars[start..i].iter().collect(),
+                Style::default().fg(p.text),
+            );
+        }
+    }
+    spans
+}
+
 /// One rendered line of task output: section headers stand out, error
 /// and warning lines are tinted, leading timestamps are dimmed so the
 /// message carries the color.
@@ -3079,5 +3174,49 @@ fn history_glyph(status: &Status) -> &'static str {
         Status::Pending => "◐",
         Status::Stopped => "○",
         Status::Unknown(_) => "·",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find<'a>(spans: &'a [Span], text: &str) -> &'a Span<'a> {
+        spans
+            .iter()
+            .find(|s| s.content == text)
+            .unwrap_or_else(|| panic!("no span {text:?} in {spans:?}"))
+    }
+
+    #[test]
+    fn sql_spans_color_keywords_strings_numbers_comments() {
+        let p = palette(ThemeMode::Dark);
+        let spans = sql_spans("SELECT count(x) FROM t WHERE s = 'bob' LIMIT 10 -- hi", &p);
+        assert_eq!(find(&spans, "SELECT").style.fg, Some(p.key));
+        assert!(find(&spans, "SELECT")
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert_eq!(find(&spans, "count").style.fg, Some(p.key));
+        assert_eq!(find(&spans, "t").style.fg, Some(p.text));
+        assert_eq!(find(&spans, "'bob'").style.fg, Some(p.ok));
+        assert_eq!(find(&spans, "10").style.fg, Some(p.warn));
+        assert_eq!(find(&spans, "-- hi").style.fg, Some(p.dim));
+    }
+
+    #[test]
+    fn sql_spans_preserve_every_char() {
+        let p = palette(ThemeMode::Dark);
+        for sql in [
+            "SELECT `col a`, b - 1 FROM main.sales.orders WHERE s = 'unclosed",
+            "-- only a comment",
+            "  \"quoted id\" <> 3.5e2 ",
+        ] {
+            let joined: String = sql_spans(sql, &p)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(joined, sql);
+        }
     }
 }
