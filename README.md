@@ -55,6 +55,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   what ran in parallel and which task ate the runtime
 - Task DAG (`d` in a run view): the run's tasks as a dependency tree,
   each under the task it waits for, colored by state
+- Run-history grid (`g` in a run view): every task's state across the
+  job's recent runs as a matrix — a flaky task shows as scattered ✗ in
+  one row, a broken job as a red column — with a duration sparkline per
+  task and a `▲1.6×` flag when the latest run is well above its median
 - Upcoming runs (`u`): every job that will run again on its own — cron
   schedules, periodic and file-arrival triggers, continuous jobs —
   sorted by next fire time with countdowns, and `⏱ in 27m` shown right
@@ -63,7 +67,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   page with `←`/`→`, `/` filters columns by name, and `v` flips to a
   record view (one row, fields stacked) — the way through a
   500-column table; SQL results page with `Shift+←`/`→`
-- Act on resources: start/stop clusters, warehouses and pipelines, trigger job runs
+- Act on resources: start/stop clusters, warehouses and pipelines, trigger
+  job runs — and `S` pauses/resumes a job's schedule or trigger in place,
+  with `⏸ paused` shown right in the jobs pane
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
 - Warehouse details include recent query history: who ran what, how long
@@ -175,6 +181,7 @@ them can be slow on busy workspaces.
 | `r` (run view) | Repair a failed run — reruns only the failed tasks |
 | `t` (run view) | Timeline: per-task Gantt of the run on a shared time axis |
 | `d` (run view) | DAG: the run's tasks as a dependency tree, colored by state |
+| `g` (run view) | History grid: task states across recent runs, with duration trends |
 | `u` | Upcoming runs: what fires next across all scheduled/triggered jobs, soonest first; `Enter` jumps to the job |
 | `a` / `x` (secrets pane) | Create scope or add secret (masked) / delete with confirm |
 | `Backspace` | Go up one level in the Unity Catalog tree |
@@ -182,6 +189,7 @@ them can be slow on busy workspaces.
 | `L` | Lineage tree: up to 3 hops upstream/downstream of the selected table/view |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
+| `S` (jobs pane) | Pause / resume the job's schedule, trigger or continuous mode |
 | `g` | Show access: effective grants / permissions for the selected item |
 | `$` | DBU usage for the last 14 days (queries system tables on a warehouse) |
 | `o` | Open selected item in the workspace web UI |

@@ -82,6 +82,37 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
     Ok(Shape::List(items))
 }
 
+/// Pauses or resumes whatever makes the job fire on its own — its cron
+/// schedule, continuous mode, or trigger. Returns the flash message.
+/// The update API replaces a `new_settings` field wholesale, so the
+/// whole block is sent back with only `pause_status` flipped.
+pub async fn toggle_pause(cli: &DatabricksCli, job_id: &str, name: &str) -> Result<String, String> {
+    let job = cli
+        .run(&["jobs", "get", job_id])
+        .await
+        .map_err(|e| format!("✗ {e:#}"))?;
+    let settings = &job["settings"];
+    let field = ["schedule", "continuous", "trigger"]
+        .into_iter()
+        .find(|f| settings[*f].is_object())
+        .ok_or_else(|| format!("✗ “{name}” only runs on demand — nothing to pause"))?;
+    let mut block = settings[field].clone();
+    let paused = block["pause_status"].as_str() == Some("PAUSED");
+    block["pause_status"] = Value::String(if paused { "UNPAUSED" } else { "PAUSED" }.to_string());
+    let id: u64 = job_id
+        .parse()
+        .map_err(|_| format!("✗ bad job id: {job_id}"))?;
+    let payload = serde_json::json!({"job_id": id, "new_settings": {field: block}}).to_string();
+    cli.run_action(&["jobs", "update", "--json", &payload])
+        .await
+        .map_err(|e| format!("✗ {e:#}"))?;
+    Ok(if paused {
+        format!("▶ resumed “{name}” — {field} active again")
+    } else {
+        format!("⏸ paused “{name}” — won't fire until resumed (S)")
+    })
+}
+
 fn build_item(name: String, job_id: Option<u64>, runs: &[Value], settings: &Value) -> ListItem {
     let status = runs
         .first()

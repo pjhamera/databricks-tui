@@ -565,6 +565,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             "Focused pane",
             &[
                 ("s", "start / stop / run the selected item"),
+                ("S", "jobs: pause / resume the schedule or trigger"),
                 ("g", "access: grants and permissions"),
                 ("o", "open in the workspace web UI"),
             ],
@@ -587,6 +588,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("o", "full task output — keeps tailing while live"),
                 ("t", "timeline: per-task Gantt of the run"),
                 ("d", "dag: task dependency tree of the run"),
+                ("g", "grid: task states across recent runs, with trends"),
                 ("r", "repair a failed run — reruns only failed tasks"),
                 ("s", "cancel the shown run"),
                 ("j / k, J", "scroll · toggle raw JSON"),
@@ -1951,6 +1953,12 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
         ));
     }
+    if rv.show_grid {
+        title_spans.push(Span::styled(
+            "· history grid ",
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
     let block = Block::default()
         .title(Line::from(title_spans))
         .borders(Borders::ALL)
@@ -1987,6 +1995,11 @@ fn draw_run(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 p,
             );
         }
+        return;
+    }
+
+    if rv.show_grid {
+        draw_run_grid(f, area, rv, app, block, p);
         return;
     }
 
@@ -2245,6 +2258,179 @@ fn draw_run_dag(
         total,
         area.height.saturating_sub(2) as usize,
         scroll as usize,
+        p,
+    );
+}
+
+/// Compact duration sparkline; scales min..max across eight bar heights
+/// so small drifts stay visible.
+fn spark(vals: &[u64]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let (min, max) = vals
+        .iter()
+        .fold((u64::MAX, 0), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+    vals.iter()
+        .map(|v| {
+            if max == min {
+                '▄'
+            } else {
+                BARS[((v - min) * 7 / (max - min)) as usize]
+            }
+        })
+        .collect()
+}
+
+/// Airflow-style history grid: every task's state across the job's
+/// recent runs, one row per task, oldest run left. Rows end with a
+/// duration sparkline over the task's successful runs, flagged when the
+/// newest is well above the median — the flaky-task and creeping-slowdown
+/// finder.
+fn draw_run_grid(
+    f: &mut Frame,
+    area: Rect,
+    rv: &crate::app::RunView,
+    app: &App,
+    block: Block,
+    p: &Palette,
+) {
+    let g = match &rv.grid {
+        None => {
+            let par = Paragraph::new(format!("{} loading run history…", app.spinner()))
+                .style(Style::default().fg(p.warn))
+                .block(block);
+            f.render_widget(par, area);
+            return;
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!("✗ {e}"))
+                .style(Style::default().fg(p.err))
+                .wrap(Wrap { trim: false })
+                .block(block);
+            f.render_widget(par, area);
+            return;
+        }
+        Some(Ok(g)) => g,
+    };
+    if g.tasks.is_empty() {
+        let par = Paragraph::new(
+            "no per-task history recorded — legacy single-task runs carry none (J shows the raw JSON)",
+        )
+        .style(Style::default().fg(p.dim))
+        .wrap(Wrap { trim: false })
+        .block(block);
+        f.render_widget(par, area);
+        return;
+    }
+
+    let name_w = g
+        .tasks
+        .iter()
+        .map(|t| t.key.chars().count())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 24);
+    let inner_w = area.width.saturating_sub(4) as usize;
+    // Trailing trend: "  " + sparkline (≤10) + " " + duration (≤8) + flag (≤7).
+    let trend_w = 28;
+    // When the terminal is narrow, drop the oldest columns first.
+    let cols_fit = (inner_w.saturating_sub(name_w + 2 + trend_w) / 2).max(1);
+    let skip = g.runs.len().saturating_sub(cols_fit);
+    let cols = &g.runs[skip..];
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(
+                "⊞ {} task{} × last {} run{} · oldest → newest",
+                g.tasks.len(),
+                if g.tasks.len() == 1 { "" } else { "s" },
+                cols.len(),
+                if cols.len() == 1 { "" } else { "s" },
+            ),
+            Style::default().fg(p.dim),
+        )),
+        Line::default(),
+    ];
+
+    // Marker over the column of the run currently shown behind the grid.
+    let sel = rv.runs.get(rv.idx).map(|(id, _, _)| id.as_str());
+    if let Some(ci) = sel.and_then(|id| cols.iter().position(|r| r.run_id == id)) {
+        let acc = accent(Panel::Jobs, p);
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(name_w + 2 + 2 * ci)),
+            Span::styled("▾", Style::default().fg(acc).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    let mut run_row = vec![Span::styled(
+        format!("{:<name_w$}  ", "run"),
+        Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+    )];
+    for r in cols {
+        run_row.push(Span::styled(
+            format!("{} ", history_glyph(&r.status)),
+            Style::default().fg(status_color(&r.status, p)),
+        ));
+    }
+    if let Some(newest) = cols.last() {
+        run_row.push(Span::styled(
+            format!("  newest {}", newest.age),
+            Style::default().fg(p.dim),
+        ));
+    }
+    lines.push(Line::from(run_row));
+    lines.push(Line::default());
+
+    for t in &g.tasks {
+        let mut key: String = t.key.chars().take(name_w).collect();
+        if key.chars().count() < t.key.chars().count() {
+            key.pop();
+            key.push('…');
+        }
+        let mut spans = vec![Span::styled(
+            format!("{key:<name_w$}  "),
+            Style::default().fg(p.text),
+        )];
+        for cell in &t.cells[skip..] {
+            spans.push(match cell {
+                Some(s) => Span::styled(
+                    format!("{} ", history_glyph(s)),
+                    Style::default().fg(status_color(s, p)),
+                ),
+                None => Span::styled("· ", Style::default().fg(p.dim)),
+            });
+        }
+        let ds = t.success_durations();
+        if let Some(latest) = ds.last() {
+            let window = &ds[ds.len().saturating_sub(10)..];
+            spans.push(Span::styled(
+                format!("  {}", spark(window)),
+                Style::default().fg(p.dim),
+            ));
+            spans.push(Span::styled(
+                format!(" {}", crate::shape::fmt_duration_ms(*latest)),
+                Style::default().fg(p.text),
+            ));
+        }
+        if let Some((latest, median)) = t.slowdown() {
+            let ratio = latest as f64 / median as f64;
+            let color = if ratio >= 2.0 { p.err } else { p.warn };
+            spans.push(Span::styled(
+                format!(" ▲{ratio:.1}×"),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    let total = lines.len();
+    let par = Paragraph::new(lines).scroll((rv.scroll, 0)).block(block);
+    f.render_widget(par, area);
+    scrollbar(
+        f,
+        area,
+        total,
+        area.height.saturating_sub(2) as usize,
+        rv.scroll as usize,
         p,
     );
 }
@@ -2619,6 +2805,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 spans.push(dim(" timeline   "));
                 spans.push(key("d"));
                 spans.push(dim(" dag   "));
+                spans.push(key("g"));
+                spans.push(dim(" grid   "));
                 spans.push(key("r"));
                 spans.push(dim(" repair   "));
             }
@@ -2727,6 +2915,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             _ => {
                 spans.push(key("s"));
                 spans.push(dim(" action   "));
+                if app.focus == Panel::Jobs {
+                    spans.push(key("S"));
+                    spans.push(dim(" pause   "));
+                }
             }
         }
         spans.extend([
@@ -3253,5 +3445,13 @@ mod tests {
                 .collect();
             assert_eq!(joined, sql);
         }
+    }
+
+    #[test]
+    fn spark_scales_min_to_max() {
+        assert_eq!(spark(&[1, 1, 1]), "▄▄▄");
+        assert_eq!(spark(&[0, 7]), "▁█");
+        assert_eq!(spark(&[100, 150, 200]), "▁▄█");
+        assert_eq!(spark(&[]), "");
     }
 }

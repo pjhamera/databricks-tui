@@ -418,6 +418,10 @@ pub struct RunView {
     /// Dependency-tree view of the run's tasks; mutually exclusive with
     /// the timeline, sticky across h/l like it.
     pub show_dag: bool,
+    /// History grid: tasks × recent runs, with duration trends. Fetched
+    /// once per run view (the grid is per-job, not per-run).
+    pub show_grid: bool,
+    pub grid: Option<Result<fetchers::runs::GridData, String>>,
     fetched_at: Instant,
 }
 
@@ -522,6 +526,7 @@ pub struct App {
     pub hist_search: Option<(String, usize)>,
     pub run_view: Option<RunView>,
     run_rx: Option<oneshot::Receiver<RunUpdate>>,
+    grid_rx: Option<oneshot::Receiver<Result<fetchers::runs::GridData, String>>>,
     #[allow(clippy::type_complexity)]
     upcoming_rx: Option<oneshot::Receiver<Result<Vec<fetchers::upcoming::UpcomingJob>, String>>>,
     problems_rx: Option<oneshot::Receiver<Vec<fetchers::problems::RemoteProblem>>>,
@@ -629,6 +634,7 @@ impl App {
             hist_search: None,
             run_view: None,
             run_rx: None,
+            grid_rx: None,
             upcoming_rx: None,
             problems_rx: None,
             pending: None,
@@ -919,6 +925,7 @@ impl App {
         self.sql_rx = None;
         self.run_view = None;
         self.run_rx = None;
+        self.grid_rx = None;
         self.pending = None;
         self.in_flight = 0;
         self.loading = false;
@@ -2833,6 +2840,8 @@ impl App {
             show_output: false,
             show_timeline: false,
             show_dag: false,
+            show_grid: false,
+            grid: None,
             fetched_at: Instant::now(),
         });
         let (tx, rx) = oneshot::channel();
@@ -2863,6 +2872,7 @@ impl App {
     pub fn close_run(&mut self) {
         self.run_view = None;
         self.run_rx = None;
+        self.grid_rx = None;
     }
 
     /// Moves to an older (delta > 0) or newer (delta < 0) run.
@@ -3018,6 +3028,7 @@ impl App {
         }
         rv.show_timeline = !rv.show_timeline;
         rv.show_dag = false;
+        rv.show_grid = false;
         rv.scroll = 0;
     }
 
@@ -3035,7 +3046,57 @@ impl App {
         }
         rv.show_dag = !rv.show_dag;
         rv.show_timeline = false;
+        rv.show_grid = false;
         rv.scroll = 0;
+    }
+
+    /// `g` in the run view: history grid — every task's state across the
+    /// job's recent runs, with duration trends.
+    pub fn run_toggle_grid(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(rv) = &mut self.run_view else {
+            return;
+        };
+        if rv.panel != Panel::Jobs {
+            self.flash = Some((
+                "✗ the history grid is for job runs — updates have no task matrix".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        rv.show_grid = !rv.show_grid;
+        rv.show_timeline = false;
+        rv.show_dag = false;
+        rv.scroll = 0;
+        if !rv.show_grid || rv.grid.is_some() || self.grid_rx.is_some() {
+            return;
+        }
+        let job_id = rv.owner_id.clone();
+        let (tx, rx) = oneshot::channel();
+        self.grid_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let _ = tx.send(fetchers::runs::grid(&cli, &job_id).await);
+        });
+    }
+
+    pub fn poll_grid(&mut self) -> bool {
+        let Some(rx) = &mut self.grid_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.grid_rx = None;
+                if let Some(rv) = &mut self.run_view {
+                    rv.grid = Some(result);
+                }
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.grid_rx = None;
+                true
+            }
+        }
     }
 
     pub fn run_toggle_raw(&mut self) {
@@ -3196,6 +3257,40 @@ impl App {
         self.confirm = Some(Confirm {
             message: format!("{verb} {} “{}”?", group.trim_end_matches('s'), name),
             args: vec![group.to_string(), action.to_string(), id],
+        });
+    }
+
+    /// `S` on the jobs pane: pause or resume the selected job's schedule,
+    /// trigger or continuous mode. No confirm — it's a symmetric toggle,
+    /// undone by pressing S again.
+    pub fn request_schedule_toggle(&mut self, cli: &Arc<DatabricksCli>) {
+        if self.focus != Panel::Jobs {
+            self.flash = Some((
+                "✗ schedule pause applies to jobs — focus the Lakeflow pane".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let Some(id) = item.id.clone() else {
+            return;
+        };
+        let name = item.name.clone();
+        if self.action_rx.is_some() {
+            self.flash = Some((
+                "⏳ another action is still in flight".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        self.flash = Some((format!("⏳ toggling schedule of “{name}”…"), Instant::now()));
+        let (tx, rx) = oneshot::channel();
+        self.action_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let _ = tx.send(fetchers::jobs::toggle_pause(&cli, &id, &name).await);
         });
     }
 

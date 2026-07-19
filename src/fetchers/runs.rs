@@ -23,6 +23,134 @@ pub async fn list(
         .unwrap_or_default())
 }
 
+/// One run column of the history grid.
+pub struct GridRun {
+    pub run_id: String,
+    pub status: Status,
+    pub age: String,
+}
+
+/// One task row of the history grid, index-aligned with `GridData::runs`:
+/// the task's state and execution duration in each run, None where the
+/// task didn't exist yet (or timing wasn't recorded).
+pub struct GridTask {
+    pub key: String,
+    pub cells: Vec<Option<Status>>,
+    pub durations: Vec<Option<u64>>,
+}
+
+impl GridTask {
+    /// Durations of successful cells, oldest first. Failed runs stop
+    /// early, so their durations would fake a speed-up.
+    pub fn success_durations(&self) -> Vec<u64> {
+        self.cells
+            .iter()
+            .zip(&self.durations)
+            .filter(|(c, _)| matches!(c, Some(Status::Success)))
+            .filter_map(|(_, d)| *d)
+            .collect()
+    }
+
+    /// Some((latest, median of the earlier ones)) when the newest
+    /// successful duration is at least 1.5× the median of three or more
+    /// earlier ones — a creeping slowdown worth flagging.
+    pub fn slowdown(&self) -> Option<(u64, u64)> {
+        let ds = self.success_durations();
+        let (latest, prior) = ds.split_last()?;
+        if prior.len() < 3 {
+            return None;
+        }
+        let mut sorted = prior.to_vec();
+        sorted.sort_unstable();
+        let median = sorted[sorted.len() / 2];
+        (median > 0 && *latest * 2 >= median * 3).then_some((*latest, median))
+    }
+}
+
+/// The run-history grid of a job: tasks × recent runs.
+pub struct GridData {
+    /// Columns, oldest → newest.
+    pub runs: Vec<GridRun>,
+    pub tasks: Vec<GridTask>,
+}
+
+/// Task states and durations across a job's recent runs, in one call
+/// via `--expand-tasks`.
+pub async fn grid(cli: &DatabricksCli, job_id: &str) -> Result<GridData, String> {
+    let args = [
+        "jobs",
+        "list-runs",
+        "--job-id",
+        job_id,
+        "--expand-tasks",
+        "--limit",
+        "20",
+    ];
+    let json = cli.run(&args).await.map_err(|e| format!("{e:#}"))?;
+    Ok(grid_from(&json))
+}
+
+fn grid_from(json: &serde_json::Value) -> GridData {
+    let mut runs_json = json
+        .as_array()
+        .cloned()
+        .or_else(|| json["runs"].as_array().cloned())
+        .unwrap_or_default();
+    // The API returns newest first; grid columns read oldest → newest.
+    runs_json.reverse();
+    let runs: Vec<GridRun> = runs_json
+        .iter()
+        .map(|r| GridRun {
+            run_id: r["run_id"]
+                .as_u64()
+                .map(|i| i.to_string())
+                .unwrap_or_default(),
+            status: run_status(r),
+            age: r["start_time"]
+                .as_u64()
+                .map(relative_time)
+                .unwrap_or_default(),
+        })
+        .collect();
+    // Row order follows the newest run, so the job's current shape is on
+    // top and retired tasks sink to the bottom.
+    let mut keys: Vec<String> = Vec::new();
+    for r in runs_json.iter().rev() {
+        for t in r["tasks"].as_array().into_iter().flatten() {
+            if let Some(k) = t["task_key"].as_str() {
+                if !keys.iter().any(|e| e == k) {
+                    keys.push(k.to_string());
+                }
+            }
+        }
+    }
+    let tasks = keys
+        .into_iter()
+        .map(|key| {
+            let mut cells = Vec::with_capacity(runs_json.len());
+            let mut durations = Vec::with_capacity(runs_json.len());
+            for r in &runs_json {
+                let t = r["tasks"]
+                    .as_array()
+                    .and_then(|ts| ts.iter().find(|t| t["task_key"].as_str() == Some(&key)));
+                cells.push(t.map(run_status));
+                durations.push(t.and_then(|t| {
+                    t["execution_duration"]
+                        .as_u64()
+                        .or_else(|| t["run_duration"].as_u64())
+                        .filter(|d| *d > 0)
+                }));
+            }
+            GridTask {
+                key,
+                cells,
+                durations,
+            }
+        })
+        .collect();
+    GridData { runs, tasks }
+}
+
 /// One task's execution window, for the timeline view.
 pub struct TimelineTask {
     pub key: String,
@@ -391,6 +519,62 @@ mod tests {
         // report also depends on load, beyond its placement parent.
         assert_eq!(rows[2].also_after, ["load"]);
         assert_eq!(rows[0].duration, Some(1000));
+    }
+
+    #[test]
+    fn grid_aligns_tasks_across_runs_oldest_first() {
+        // Newest first, as the API returns them; "load" is new in run 3.
+        let json = serde_json::json!([
+            {"run_id": 3, "start_time": 3000_u64, "state": {"result_state": "SUCCESS"},
+             "tasks": [
+                {"task_key": "extract", "execution_duration": 100, "state": {"result_state": "SUCCESS"}},
+                {"task_key": "load", "execution_duration": 50, "state": {"result_state": "FAILED"}}
+             ]},
+            {"run_id": 2, "start_time": 2000_u64, "state": {"result_state": "FAILED"},
+             "tasks": [
+                {"task_key": "extract", "execution_duration": 90, "state": {"result_state": "SUCCESS"}}
+             ]},
+            {"run_id": 1, "start_time": 1000_u64, "state": {"result_state": "SUCCESS"},
+             "tasks": [
+                {"task_key": "extract", "execution_duration": 80, "state": {"result_state": "SUCCESS"}}
+             ]}
+        ]);
+        let g = super::grid_from(&json);
+        let ids: Vec<&str> = g.runs.iter().map(|r| r.run_id.as_str()).collect();
+        assert_eq!(ids, ["1", "2", "3"]);
+        assert!(matches!(g.runs[1].status, Status::Failed));
+        // Rows follow the newest run's task order.
+        assert_eq!(g.tasks[0].key, "extract");
+        assert_eq!(g.tasks[1].key, "load");
+        assert_eq!(g.tasks[0].durations, [Some(80), Some(90), Some(100)]);
+        // "load" didn't exist in the two older runs.
+        assert!(g.tasks[1].cells[0].is_none());
+        assert!(g.tasks[1].cells[1].is_none());
+        assert!(matches!(g.tasks[1].cells[2], Some(Status::Failed)));
+    }
+
+    #[test]
+    fn grid_slowdown_flags_only_clear_regressions() {
+        let ok = Some(Status::Success);
+        let task = |durations: Vec<Option<u64>>| super::GridTask {
+            key: "t".to_string(),
+            cells: vec![ok.clone(); durations.len()],
+            durations,
+        };
+        // 100,100,100 then 160: 1.6× the median — flagged.
+        let slow = task(vec![Some(100), Some(100), Some(100), Some(160)]);
+        assert_eq!(slow.slowdown(), Some((160, 100)));
+        // 140 is below the 1.5× threshold.
+        assert_eq!(
+            task(vec![Some(100), Some(100), Some(100), Some(140)]).slowdown(),
+            None
+        );
+        // Too few prior samples to call it a trend.
+        assert_eq!(task(vec![Some(100), Some(100), Some(160)]).slowdown(), None);
+        // Failed runs don't count as samples.
+        let mut flaky = task(vec![Some(100), Some(10), Some(100), Some(100), Some(160)]);
+        flaky.cells[1] = Some(Status::Failed);
+        assert_eq!(flaky.slowdown(), Some((160, 100)));
     }
 
     #[test]

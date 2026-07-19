@@ -238,6 +238,9 @@ async fn run(
         if app.poll_run(&cli) {
             needs_redraw = true;
         }
+        if app.poll_grid() {
+            needs_redraw = true;
+        }
         if app.poll_upcoming() {
             needs_redraw = true;
         }
@@ -592,6 +595,12 @@ async fn run(
                             app.run_toggle_dag();
                             needs_redraw = true;
                         }
+                        (KeyCode::Esc, _)
+                            if app.run_view.as_ref().is_some_and(|rv| rv.show_grid) =>
+                        {
+                            app.run_toggle_grid(&cli);
+                            needs_redraw = true;
+                        }
                         (KeyCode::Esc, _) => {
                             app.close_run();
                             needs_redraw = true;
@@ -626,6 +635,10 @@ async fn run(
                         }
                         (KeyCode::Char('d'), _) => {
                             app.run_toggle_dag();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('g'), _) => {
+                            app.run_toggle_grid(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Char('r'), _) => {
@@ -752,6 +765,10 @@ async fn run(
                         }
                         (KeyCode::Char('s'), _) => {
                             app.request_action();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('S'), _) => {
+                            app.request_schedule_toggle(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Char('o'), _) => {

@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Run-history grid (`g` in a run view): every task's state across the
+  job's recent runs as an Airflow-style matrix, so a flaky task reads
+  differently from a broken job at a glance; `h`/`l` moves the ▾ marker
+  along the columns
+- Task duration trends in the grid: each task row ends with a sparkline
+  of its successful-run durations and a `▲1.6×` flag when the newest is
+  at least 1.5× the median — creeping slowdowns become visible before
+  they blow a deadline
+- Pause/resume job schedules (`S` on the jobs pane): flips the pause
+  status of the job's schedule, trigger or continuous mode in place —
+  no confirm, pressing `S` again undoes it; the pane shows `⏸ paused`
+  inline
+
 ## [0.25.0] - 2026-07-19
 
 ### Added
