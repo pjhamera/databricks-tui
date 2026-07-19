@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.26.0] - 2026-07-19
 
 ### Added
 - Run-history grid (`g` in a run view): every task's state across the
