@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.27.0] - 2026-07-19
 
 ### Added
 - Running-long detection: a live job run that has already taken 1.5×
