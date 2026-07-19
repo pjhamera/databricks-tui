@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Cross-workspace problems: `!` now also scans every other profile in
+  ~/.databrickscfg in the background (clusters, jobs, pipelines,
+  warehouses) and appends failures tagged "profile ▸ name"; Enter on a
+  remote row switches to that workspace. Unreachable workspaces show as
+  a single row instead of disappearing
+
 ## [0.24.0] - 2026-07-18
 
 ### Added

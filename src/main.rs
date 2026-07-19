@@ -241,6 +241,9 @@ async fn run(
         if app.poll_upcoming() {
             needs_redraw = true;
         }
+        if app.poll_problems() {
+            needs_redraw = true;
+        }
 
         // Splash: animate fast, expire on its deadline.
         if let Some(t) = app.splash_until {
@@ -353,7 +356,7 @@ async fn run(
                             break
                         }
                         (KeyCode::Esc, _) | (KeyCode::Char('!'), _) => {
-                            app.problems = None;
+                            app.close_problems();
                             needs_redraw = true;
                         }
                         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
@@ -365,7 +368,11 @@ async fn run(
                             needs_redraw = true;
                         }
                         (KeyCode::Enter, _) => {
-                            app.problems_jump();
+                            if let Some(new_cli) = app.problems_jump() {
+                                cli = new_cli;
+                                app.start_refresh(&cli);
+                                app.fetch_host(&cli);
+                            }
                             needs_redraw = true;
                         }
                         _ => {}

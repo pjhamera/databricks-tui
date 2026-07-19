@@ -433,16 +433,24 @@ enum RunUpdate {
 
 /// One unhealthy resource, pointing back at its pane and item.
 pub struct Problem {
-    pub panel: usize,
+    /// Index into `Panel::ALL`; None when the problem is a whole
+    /// workspace being unreachable during a cross-workspace scan.
+    pub panel: Option<usize>,
     pub name: String,
     pub status: Status,
     pub note: String,
+    /// Some(profile) when the problem lives in another workspace.
+    pub profile: Option<String>,
 }
 
-/// Overlay collecting everything currently failing across the panes.
+/// Overlay collecting everything currently failing: the loaded panes
+/// immediately, plus every other configured workspace as the scan of
+/// their profiles comes back.
 pub struct Problems {
     pub items: Vec<Problem>,
     pub index: usize,
+    /// True while other profiles are still being scanned.
+    pub scanning: bool,
 }
 
 /// Overlay listing jobs by their next scheduled execution, soonest first.
@@ -516,6 +524,7 @@ pub struct App {
     run_rx: Option<oneshot::Receiver<RunUpdate>>,
     #[allow(clippy::type_complexity)]
     upcoming_rx: Option<oneshot::Receiver<Result<Vec<fetchers::upcoming::UpcomingJob>, String>>>,
+    problems_rx: Option<oneshot::Receiver<Vec<fetchers::problems::RemoteProblem>>>,
     pending: Option<mpsc::UnboundedReceiver<Update>>,
     detail_rx: Option<oneshot::Receiver<DetailData>>,
     action_rx: Option<oneshot::Receiver<Result<String, String>>>,
@@ -621,6 +630,7 @@ impl App {
             run_view: None,
             run_rx: None,
             upcoming_rx: None,
+            problems_rx: None,
             pending: None,
             detail_rx: None,
             action_rx: None,
@@ -870,6 +880,12 @@ impl App {
     pub fn picker_select(&mut self) -> Option<Arc<DatabricksCli>> {
         let idx = self.picker.take()?;
         let name = self.profiles.get(idx)?.clone();
+        Some(self.switch_profile(name))
+    }
+
+    /// Switches to `name`, dropping all workspace-specific state, and
+    /// returns the CLI handle for the new workspace.
+    fn switch_profile(&mut self, name: String) -> Arc<DatabricksCli> {
         let profile_arg = if name == "DEFAULT" {
             None
         } else {
@@ -886,6 +902,7 @@ impl App {
         self.detail_rx = None;
         self.confirm = None;
         self.problems = None;
+        self.problems_rx = None;
         self.uc_path.clear();
         self.uc_rx = None;
         self.secret_scope = None;
@@ -916,7 +933,7 @@ impl App {
         self.uc_names_rx = None;
         self.restore_warehouse_pref();
 
-        Some(Arc::new(DatabricksCli::new(profile_arg)))
+        Arc::new(DatabricksCli::new(profile_arg))
     }
 
     pub fn open_jump(&mut self) {
@@ -1005,8 +1022,9 @@ impl App {
         }
     }
 
-    /// Collects everything unhealthy across the loaded panes: items whose
-    /// status is failed, or whose most recent run failed.
+    /// Collects everything unhealthy across the loaded panes — items
+    /// whose status is failed, or whose most recent run failed — then
+    /// scans every other configured workspace in the background.
     pub fn open_problems(&mut self) {
         let mut items = Vec::new();
         for (i, shape) in self.shapes.iter().enumerate() {
@@ -1026,15 +1044,74 @@ impl App {
                         "latest run failed".to_string()
                     };
                     items.push(Problem {
-                        panel: i,
+                        panel: Some(i),
                         name: it.name.clone(),
                         status: it.status.clone(),
                         note,
+                        profile: None,
                     });
                 }
             }
         }
-        self.problems = Some(Problems { items, index: 0 });
+        let current = self
+            .profile
+            .clone()
+            .unwrap_or_else(|| "DEFAULT".to_string());
+        let others: Vec<String> = self
+            .profiles
+            .iter()
+            .filter(|n| **n != current)
+            .cloned()
+            .collect();
+        let scanning = !others.is_empty();
+        if scanning {
+            let (tx, rx) = oneshot::channel();
+            self.problems_rx = Some(rx);
+            tokio::spawn(async move {
+                let _ = tx.send(fetchers::problems::fetch(others, current).await);
+            });
+        }
+        self.problems = Some(Problems {
+            items,
+            index: 0,
+            scanning,
+        });
+    }
+
+    pub fn close_problems(&mut self) {
+        self.problems = None;
+        self.problems_rx = None;
+    }
+
+    pub fn poll_problems(&mut self) -> bool {
+        let Some(rx) = &mut self.problems_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(remote) => {
+                self.problems_rx = None;
+                let Some(pr) = &mut self.problems else {
+                    return false;
+                };
+                pr.scanning = false;
+                pr.items.extend(remote.into_iter().map(|r| Problem {
+                    panel: r.panel,
+                    name: r.name,
+                    status: r.status,
+                    note: r.note,
+                    profile: Some(r.profile),
+                }));
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.problems_rx = None;
+                if let Some(pr) = &mut self.problems {
+                    pr.scanning = false;
+                }
+                true
+            }
+        }
     }
 
     pub fn problems_next(&mut self) {
@@ -1050,22 +1127,38 @@ impl App {
     }
 
     /// Jumps focus and selection to the highlighted problem's pane item.
-    pub fn problems_jump(&mut self) {
+    /// A problem in another workspace switches to that workspace instead;
+    /// the returned CLI handle must then replace the current one.
+    pub fn problems_jump(&mut self) -> Option<Arc<DatabricksCli>> {
         let Some(pr) = self.problems.take() else {
-            return;
+            self.problems_rx = None;
+            return None;
         };
-        let Some(problem) = pr.items.get(pr.index) else {
-            return;
-        };
-        self.reveal_pane(problem.panel);
-        self.focus = Panel::ALL[problem.panel];
+        self.problems_rx = None;
+        let problem = pr.items.get(pr.index)?;
+        if let Some(profile) = &problem.profile {
+            let target = match problem.panel {
+                Some(i) => format!("{} is in {}", problem.name, Panel::ALL[i].title()),
+                None => "check its auth".to_string(),
+            };
+            self.flash = Some((
+                format!("⌂ switched to {profile} — {target}"),
+                Instant::now(),
+            ));
+            let profile = profile.clone();
+            return Some(self.switch_profile(profile));
+        }
+        let panel = problem.panel?;
+        self.reveal_pane(panel);
+        self.focus = Panel::ALL[panel];
         // The pane's filter could hide the item we're jumping to.
-        self.filters[problem.panel].clear();
-        if let Some(Shape::List(list)) = &self.shapes[problem.panel] {
+        self.filters[panel].clear();
+        if let Some(Shape::List(list)) = &self.shapes[panel] {
             if let Some(pos) = list.iter().position(|i| i.name == problem.name) {
-                self.selected[problem.panel] = pos;
+                self.selected[panel] = pos;
             }
         }
+        None
     }
 
     /// `u`: what runs next — every job with a schedule or trigger,

@@ -36,7 +36,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit — and when a new
   failure appears between refreshes, the footer flashes it (with a
-  terminal bell) the moment it happens
+  terminal bell) the moment it happens; every other workspace in
+  ~/.databrickscfg is scanned in the background too, failures elsewhere
+  show up tagged with their profile, and Enter on one switches you
+  straight into that workspace
 - Command palette (`Ctrl+P`): fuzzy-search every loaded resource across
   panes and jump straight to it
 - Cancel from where you stand: `s` in a run/update view cancels it, and
@@ -165,7 +168,7 @@ them can be slow on busy workspaces.
 | `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
 | `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
 | `:` | SQL console: run any statement on a warehouse; `Tab` completes names from Unity Catalog, `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Shift+←`/`→` page columns, `Ctrl+S` export CSV |
-| `!` | Problems: everything failing across panes; `Enter` jumps to the item |
+| `!` | Problems: everything failing here and in every other configured workspace; `Enter` jumps to the item, or switches workspace for remote ones |
 | `Ctrl+P` | Command palette: fuzzy-search everything loaded, `Enter` jumps to it |
 | `s` (run view) | Cancel the shown run / stop the pipeline update |
 | `o` (run view) | Full task output: error, stack trace and log tail per task |

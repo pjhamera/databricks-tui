@@ -9,6 +9,7 @@ pub mod jobs;
 pub mod lineage;
 pub mod pipelines;
 pub mod preview;
+pub mod problems;
 pub mod runs;
 pub mod secrets;
 pub mod upcoming;

@@ -548,7 +548,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("enter", "open details / drill down"),
                 ("/", "filter the focused pane (esc clears)"),
                 ("ctrl+p", "command palette: fuzzy-jump anywhere"),
-                ("!", "problems: everything failing, enter jumps"),
+                ("!", "problems: failures in every workspace, enter jumps"),
                 ("u", "upcoming runs: what fires next, soonest first"),
                 (":", "SQL console (prefilled on a catalog table)"),
                 ("$", "cost view: DBUs, dollars, top spenders"),
@@ -735,12 +735,20 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             format!("{cut}…")
         }
     };
-    // Names get a bounded column; notes (which can be whole CLI error
-    // lines) take whatever room is left and are truncated to fit.
+    // Names get a bounded column (cross-workspace rows carry a
+    // "profile ▸ " prefix); notes (which can be whole CLI error lines)
+    // take whatever room is left and are truncated to fit.
+    let prefix_of = |problem: &crate::app::Problem| -> String {
+        problem
+            .profile
+            .as_ref()
+            .map(|pr| format!("{pr} ▸ "))
+            .unwrap_or_default()
+    };
     let name_w = pr
         .items
         .iter()
-        .map(|i| i.name.chars().count())
+        .map(|i| i.name.chars().count() + prefix_of(i).chars().count())
         .max()
         .unwrap_or(10)
         .clamp(10, 40);
@@ -762,22 +770,40 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         height,
     };
     f.render_widget(Clear, popup);
+    let mut title_spans = vec![
+        Span::styled(" ✗ ", Style::default().fg(p.err)),
+        Span::styled(
+            format!("Problems · {} ", pr.items.len()),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if pr.scanning {
+        title_spans.push(Span::styled(
+            format!("· {} scanning workspaces ", app.spinner()),
+            Style::default().fg(p.warn),
+        ));
+    }
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" ✗ ", Style::default().fg(p.err)),
-            Span::styled(
-                format!("Problems · {} ", pr.items.len()),
-                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
-            ),
-        ]))
+        .title(Line::from(title_spans))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(p.err).add_modifier(Modifier::BOLD))
         .padding(Padding::new(1, 1, 1, 1));
 
     if pr.items.is_empty() {
-        let par = Paragraph::new("✓ all clear — nothing failing right now")
-            .style(Style::default().fg(p.ok))
+        let (text, color) = if pr.scanning {
+            (
+                format!(
+                    "✓ nothing failing here — {} scanning other workspaces…",
+                    app.spinner()
+                ),
+                p.warn,
+            )
+        } else {
+            ("✓ all clear — nothing failing right now".to_string(), p.ok)
+        };
+        let par = Paragraph::new(text)
+            .style(Style::default().fg(color))
             .block(block);
         f.render_widget(par, popup);
         return;
@@ -787,26 +813,35 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         .items
         .iter()
         .map(|problem| {
-            let panel = Panel::ALL[problem.panel];
-            ListItem::new(Line::from(vec![
+            let prefix = prefix_of(problem);
+            let plen = prefix.chars().count().min(name_w.saturating_sub(4));
+            let mut spans = vec![
                 Span::styled("✗ ", Style::default().fg(p.err)),
+                Span::styled(truncate(&prefix, plen), Style::default().fg(p.dim)),
                 Span::styled(
                     format!(
                         "{:<width$}",
-                        truncate(&problem.name, name_w),
-                        width = name_w + 2
+                        truncate(&problem.name, name_w - plen),
+                        width = name_w + 2 - plen
                     ),
                     Style::default().fg(p.text),
                 ),
-                Span::styled(
-                    format!("{} {:<18}", panel.icon(), panel.title()),
-                    Style::default().fg(accent(panel, p)),
-                ),
-                Span::styled(
-                    truncate(&problem.note, note_space),
-                    Style::default().fg(p.dim),
-                ),
-            ]))
+            ];
+            spans.push(match problem.panel {
+                Some(i) => {
+                    let panel = Panel::ALL[i];
+                    Span::styled(
+                        format!("{} {:<18}", panel.icon(), panel.title()),
+                        Style::default().fg(accent(panel, p)),
+                    )
+                }
+                None => Span::styled(format!("⌂ {:<18}", "workspace"), Style::default().fg(p.dim)),
+            });
+            spans.push(Span::styled(
+                truncate(&problem.note, note_space),
+                Style::default().fg(p.dim),
+            ));
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let list = List::new(items)
@@ -2422,7 +2457,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("k"),
             dim(" select   "),
             key("enter"),
-            dim(" jump to item   "),
+            dim(" jump to item / switch workspace   "),
             key("esc"),
             dim(" close"),
         ]
