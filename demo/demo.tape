@@ -35,8 +35,28 @@ Enter
 Sleep 2.5s
 Type "h"
 Sleep 4s
+
+# --- History grid: task states across recent runs, with trends ---
+Type "g"
+Sleep 4s
+Escape
+Sleep 500ms
 Escape
 Sleep 700ms
+Escape
+Sleep 900ms
+
+# --- Run it again, with parameters ---
+Type "s"
+Sleep 1.5s
+Type "p"
+Sleep 3s
+Enter
+Sleep 2s
+
+# --- Problems: failures and slow runs, across every workspace ---
+Type "!"
+Sleep 3.5s
 Escape
 Sleep 900ms
 
