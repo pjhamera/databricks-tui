@@ -19,6 +19,7 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
             detail: d["update_time"].as_str().map(str::to_string),
             id: d["dashboard_id"].as_str().map(str::to_string),
             history: Vec::new(),
+            alert: None,
         })
         .collect();
     Ok(Shape::List(items))

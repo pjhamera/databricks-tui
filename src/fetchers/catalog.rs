@@ -16,6 +16,7 @@ fn error_entry(what: &str, err: &anyhow::Error) -> ListItem {
         detail: Some(first_line),
         id: None,
         history: Vec::new(),
+        alert: None,
     }
 }
 
@@ -29,6 +30,7 @@ fn entry(v: &Value, kind: &str) -> ListItem {
             .or_else(|| v["name"].as_str())
             .map(str::to_string),
         history: Vec::new(),
+        alert: None,
     }
 }
 
@@ -175,6 +177,7 @@ pub async fn fetch(cli: &DatabricksCli, path: &[String]) -> Result<Shape> {
                         detail,
                         name,
                         history: Vec::new(),
+                        alert: None,
                     }
                 })
                 .collect()

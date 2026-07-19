@@ -112,6 +112,9 @@ pub struct ListItem {
     pub id: Option<String>,
     /// Recent run results, oldest first — rendered as a ✓/✗ strip.
     pub history: Vec<Status>,
+    /// Attention-worthy but not failed (e.g. a run exceeding its usual
+    /// duration) — highlighted in the pane and listed under problems.
+    pub alert: Option<String>,
 }
 
 impl Default for Status {

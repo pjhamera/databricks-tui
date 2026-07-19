@@ -380,6 +380,30 @@ fn byte_at(input: &str, cursor: usize) -> usize {
         .unwrap_or(input.len())
 }
 
+/// Parses the run-parameter prompt: `key=value` pairs separated by
+/// commas, whitespace-tolerant. Values may contain `=`; empty values
+/// are allowed; an empty input means "run with the job's defaults".
+fn parse_params(input: &str) -> Result<Vec<(String, String)>, String> {
+    let mut pairs = Vec::new();
+    for seg in input.split(',') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = seg.split_once('=') else {
+            return Err(format!(
+                "✗ “{seg}” isn't key=value — separate parameters with commas"
+            ));
+        };
+        let k = k.trim();
+        if k.is_empty() {
+            return Err(format!("✗ “{seg}” is missing the parameter name"));
+        }
+        pairs.push((k.to_string(), v.trim().to_string()));
+    }
+    Ok(pairs)
+}
+
 /// Overlay for choosing which SQL warehouse runs a query.
 pub struct WhPicker {
     pub index: usize,
@@ -468,7 +492,32 @@ pub struct Upcoming {
 pub struct Confirm {
     pub message: String,
     args: Vec<String>,
+    /// Some((job_id, name)) when the action is a job trigger, enabling
+    /// the `p` = edit-parameters escape hatch.
+    pub params: Option<(String, String)>,
 }
+
+/// The run-with-parameters prompt: a single `key=value, …` line,
+/// prefilled with the job's current parameter defaults.
+pub struct ParamForm {
+    pub job_id: String,
+    pub job: String,
+    pub input: String,
+    /// Caret as a char index into `input`.
+    pub cursor: usize,
+    pub kind: fetchers::jobs::ParamKind,
+    /// True until the prefill fetch lands; typing waits for it.
+    pub loading: bool,
+}
+
+/// A run being watched for completion: bell + flash when it finishes.
+pub struct Watched {
+    pub run_id: String,
+    pub job: String,
+}
+
+/// How often the watch list re-checks its runs.
+const WATCH_INTERVAL: Duration = Duration::from_secs(10);
 
 enum Update {
     Panel(usize, Result<Shape, String>),
@@ -546,9 +595,10 @@ pub struct App {
     pub filter_entry: bool,
     /// Persisted preferences (theme, warehouse per profile).
     pub config: crate::config::Config,
-    /// Failed item names per pane at the last refresh — None until the
-    /// pane has loaded once, so the first load never alerts.
-    failed_seen: [Option<std::collections::HashSet<String>>; 7],
+    /// (name, is-slow-warning) pairs needing attention per pane at the
+    /// last refresh — None until the pane has loaded once, so the first
+    /// load never alerts.
+    failed_seen: [Option<std::collections::HashSet<(String, bool)>>; 7],
     /// Ctrl+P fuzzy jump overlay.
     pub jump: Option<Jump>,
     /// Canonical pane indices in display order.
@@ -575,6 +625,18 @@ pub struct App {
     secrets_rx: Option<oneshot::Receiver<Result<Shape, String>>>,
     /// Create-scope / add-secret input form.
     pub secret_form: Option<SecretForm>,
+    /// Run-with-parameters prompt (via `p` on a job-run confirm).
+    pub param_form: Option<ParamForm>,
+    #[allow(clippy::type_complexity)]
+    param_rx: Option<
+        oneshot::Receiver<Result<(Vec<(String, String)>, fetchers::jobs::ParamKind), String>>,
+    >,
+    /// Runs watched for completion; they outlive the run view.
+    pub watched: Vec<Watched>,
+    #[allow(clippy::type_complexity)]
+    watch_rx: Option<oneshot::Receiver<Vec<(String, Result<(Status, bool), String>)>>>,
+    /// When the watch list last polled its runs.
+    watch_at: Instant,
 }
 
 /// Ctrl+P overlay: fuzzy-search everything loaded, Enter jumps to it.
@@ -662,6 +724,11 @@ impl App {
             secret_scope: None,
             secrets_rx: None,
             secret_form: None,
+            param_form: None,
+            param_rx: None,
+            watched: Vec::new(),
+            watch_rx: None,
+            watch_at: Instant::now(),
         };
         app.load_pane_prefs();
         app
@@ -786,8 +853,8 @@ impl App {
         }
     }
 
-    /// Flashes (and rings the bell) when a resource fails between one
-    /// refresh and the next.
+    /// Flashes (and rings the bell) when a resource fails — or starts
+    /// running suspiciously long — between one refresh and the next.
     fn alert_new_failures(&mut self, idx: usize) {
         // Catalog "error rows" are listing problems, not runtime failures.
         if idx >= 5 {
@@ -796,28 +863,40 @@ impl App {
         let Some(Shape::List(items)) = &self.shapes[idx] else {
             return;
         };
-        let failed: std::collections::HashSet<String> = items
-            .iter()
-            .filter(|it| {
-                matches!(it.status, Status::Failed)
-                    || it
-                        .history
-                        .last()
-                        .is_some_and(|s| matches!(s, Status::Failed))
-            })
-            .map(|it| it.name.clone())
-            .collect();
+        // Keyed (name, is_slow) so a slow-run warning doesn't swallow a
+        // later real failure of the same job, or vice versa.
+        let mut attention: std::collections::HashSet<(String, bool)> =
+            std::collections::HashSet::new();
+        for it in items {
+            let failed = matches!(it.status, Status::Failed)
+                || it
+                    .history
+                    .last()
+                    .is_some_and(|s| matches!(s, Status::Failed));
+            if failed {
+                attention.insert((it.name.clone(), false));
+            }
+            if it.alert.is_some() {
+                attention.insert((it.name.clone(), true));
+            }
+        }
         if let Some(prev) = &self.failed_seen[idx] {
-            let mut newly: Vec<&String> = failed.difference(prev).collect();
+            let mut newly: Vec<&(String, bool)> = attention.difference(prev).collect();
             if !newly.is_empty() {
-                newly.sort();
+                // Failures outrank slow-run warnings when both are new.
+                newly.sort_by_key(|(name, slow)| (*slow, name.clone()));
                 let extra = if newly.len() > 1 {
                     format!(" (+{} more)", newly.len() - 1)
                 } else {
                     String::new()
                 };
+                let (name, slow) = newly[0];
                 self.flash = Some((
-                    format!("✗ {}{extra} just failed — ! to inspect", newly[0]),
+                    if *slow {
+                        format!("⚠ {name}{extra} running much longer than usual — ! to inspect")
+                    } else {
+                        format!("✗ {name}{extra} just failed — ! to inspect")
+                    },
                     Instant::now(),
                 ));
                 // Bell so a backgrounded terminal (or tmux) flags it too.
@@ -825,7 +904,7 @@ impl App {
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }
         }
-        self.failed_seen[idx] = Some(failed);
+        self.failed_seen[idx] = Some(attention);
     }
 
     /// Remembers the current theme across sessions.
@@ -914,6 +993,10 @@ impl App {
         self.secret_scope = None;
         self.secrets_rx = None;
         self.secret_form = None;
+        self.param_form = None;
+        self.param_rx = None;
+        self.watched.clear();
+        self.watch_rx = None;
         self.preview = None;
         self.preview_rx = None;
         self.wh_picker = None;
@@ -1044,9 +1127,11 @@ impl App {
                     .history
                     .last()
                     .is_some_and(|s| matches!(s, Status::Failed));
-                if failed_now || failed_last {
+                if failed_now || failed_last || it.alert.is_some() {
                     let note = if failed_now {
                         it.detail.clone().unwrap_or_default()
+                    } else if let Some(alert) = &it.alert {
+                        alert.clone()
                     } else {
                         "latest run failed".to_string()
                     };
@@ -1663,7 +1748,11 @@ impl App {
                 ],
             ),
         };
-        self.confirm = Some(Confirm { message, args });
+        self.confirm = Some(Confirm {
+            message,
+            args,
+            params: None,
+        });
     }
 
     /// `g` in the secrets pane: the scope's ACLs.
@@ -3011,6 +3100,7 @@ impl App {
                 run_id.clone(),
                 "--rerun-all-failed-tasks".to_string(),
             ],
+            params: None,
         });
     }
 
@@ -3256,6 +3346,7 @@ impl App {
         };
         self.confirm = Some(Confirm {
             message: format!("{verb} {} “{}”?", group.trim_end_matches('s'), name),
+            params: (self.focus == Panel::Jobs).then(|| (id.clone(), name.clone())),
             args: vec![group.to_string(), action.to_string(), id],
         });
     }
@@ -3324,7 +3415,11 @@ impl App {
                 ],
             )
         };
-        self.confirm = Some(Confirm { message, args });
+        self.confirm = Some(Confirm {
+            message,
+            args,
+            params: None,
+        });
     }
 
     /// Cancels the in-flight console statement server-side; the polling
@@ -3371,6 +3466,278 @@ impl App {
             };
             let _ = tx.send(result);
         });
+    }
+
+    /// `p` on a job-run confirm: swaps the plain trigger for the
+    /// run-with-parameters prompt, prefilled with the job's defaults.
+    pub fn open_param_form(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some((job_id, name)) = self.confirm.take().and_then(|c| c.params) else {
+            return;
+        };
+        self.param_form = Some(ParamForm {
+            job_id: job_id.clone(),
+            job: name,
+            input: String::new(),
+            cursor: 0,
+            kind: fetchers::jobs::ParamKind::Notebook,
+            loading: true,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.param_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let _ = tx.send(fetchers::jobs::params(&cli, &job_id).await);
+        });
+    }
+
+    /// Delivers the parameter prefill into the open form.
+    pub fn poll_param(&mut self) -> bool {
+        let Some(rx) = &mut self.param_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.param_rx = None;
+                let Some(form) = &mut self.param_form else {
+                    return true;
+                };
+                match result {
+                    Ok((pairs, kind)) => {
+                        form.input = pairs
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        form.cursor = form.input.chars().count();
+                        form.kind = kind;
+                        form.loading = false;
+                    }
+                    Err(e) => {
+                        self.param_form = None;
+                        self.flash = Some((e, Instant::now()));
+                    }
+                }
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.param_rx = None;
+                self.param_form = None;
+                true
+            }
+        }
+    }
+
+    pub fn param_push(&mut self, c: char) {
+        if let Some(form) = self.param_form.as_mut().filter(|f| !f.loading) {
+            let at = byte_at(&form.input, form.cursor);
+            form.input.insert(at, c);
+            form.cursor += 1;
+        }
+    }
+
+    pub fn param_pop(&mut self) {
+        if let Some(form) = self.param_form.as_mut().filter(|f| !f.loading) {
+            if form.cursor > 0 {
+                form.cursor -= 1;
+                let at = byte_at(&form.input, form.cursor);
+                form.input.remove(at);
+            }
+        }
+    }
+
+    pub fn param_left(&mut self) {
+        if let Some(form) = &mut self.param_form {
+            form.cursor = form.cursor.saturating_sub(1);
+        }
+    }
+
+    pub fn param_right(&mut self) {
+        if let Some(form) = &mut self.param_form {
+            form.cursor = (form.cursor + 1).min(form.input.chars().count());
+        }
+    }
+
+    pub fn param_home(&mut self) {
+        if let Some(form) = &mut self.param_form {
+            form.cursor = 0;
+        }
+    }
+
+    pub fn param_end(&mut self) {
+        if let Some(form) = &mut self.param_form {
+            form.cursor = form.input.chars().count();
+        }
+    }
+
+    /// Enter on the parameter prompt: triggers the run with the edited
+    /// overrides via `run-now --json`; an empty prompt runs as-is.
+    pub fn param_submit(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(form) = &self.param_form else {
+            return;
+        };
+        if form.loading {
+            return;
+        }
+        let pairs = match parse_params(&form.input) {
+            Ok(pairs) => pairs,
+            Err(e) => {
+                self.flash = Some((e, Instant::now()));
+                return;
+            }
+        };
+        let Some(form) = self.param_form.take() else {
+            return;
+        };
+        let Ok(id) = form.job_id.parse::<u64>() else {
+            self.flash = Some((format!("✗ bad job id: {}", form.job_id), Instant::now()));
+            return;
+        };
+        let (base, args) = if pairs.is_empty() {
+            (
+                format!("Run job “{}”", form.job),
+                vec!["jobs".to_string(), "run-now".to_string(), form.job_id],
+            )
+        } else {
+            let map: serde_json::Map<String, serde_json::Value> = pairs
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
+            let payload =
+                serde_json::json!({"job_id": id, form.kind.payload_key(): map}).to_string();
+            (
+                format!("Run job “{}” with parameters", form.job),
+                vec![
+                    "jobs".to_string(),
+                    "run-now".to_string(),
+                    "--json".to_string(),
+                    payload,
+                ],
+            )
+        };
+        self.flash = Some((format!("⏳ {base}…"), Instant::now()));
+        let (tx, rx) = oneshot::channel();
+        self.action_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let result = match cli.run_action(&args).await {
+                Ok(()) => Ok(format!("✓ {base} — done")),
+                Err(e) => Err(format!("✗ {e:#}")),
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn close_param_form(&mut self) {
+        self.param_form = None;
+        self.param_rx = None;
+    }
+
+    /// `W` in the run view: watch the shown run — bell + flash when it
+    /// finishes, however long that takes and wherever you are by then.
+    pub fn toggle_watch(&mut self) {
+        let Some(rv) = &self.run_view else {
+            return;
+        };
+        if rv.panel != Panel::Jobs {
+            self.flash = Some((
+                "✗ watching is for job runs — pipeline updates refresh inline".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        let Some((run_id, _, _)) = rv.runs.get(rv.idx) else {
+            return;
+        };
+        if let Some(pos) = self.watched.iter().position(|w| w.run_id == *run_id) {
+            let w = self.watched.remove(pos);
+            self.flash = Some((
+                format!("✓ no longer watching run {} of “{}”", w.run_id, w.job),
+                Instant::now(),
+            ));
+            return;
+        }
+        if !rv.live {
+            self.flash = Some((
+                "✗ this run already finished — nothing to watch".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        self.watched.push(Watched {
+            run_id: run_id.clone(),
+            job: rv.owner_name.clone(),
+        });
+        self.flash = Some((
+            format!(
+                "👁 watching run {} of “{}” — bell when it finishes",
+                run_id, rv.owner_name
+            ),
+            Instant::now(),
+        ));
+    }
+
+    /// Re-checks watched runs every few seconds; a finished one rings
+    /// the bell, flashes its result and leaves the list.
+    pub fn poll_watch(&mut self, cli: &Arc<DatabricksCli>) -> bool {
+        if let Some(rx) = &mut self.watch_rx {
+            return match rx.try_recv() {
+                Ok(states) => {
+                    self.watch_rx = None;
+                    let mut done: Vec<(String, Status)> = Vec::new();
+                    for (run_id, state) in states {
+                        // Errors are left in place: most are transient,
+                        // and the next poll retries anyway.
+                        if let Ok((status, false)) = state {
+                            if let Some(pos) = self.watched.iter().position(|w| w.run_id == run_id)
+                            {
+                                done.push((self.watched.remove(pos).job, status));
+                            }
+                        }
+                    }
+                    if let Some((job, status)) = done.first() {
+                        let extra = if done.len() > 1 {
+                            format!(" (+{} more)", done.len() - 1)
+                        } else {
+                            String::new()
+                        };
+                        self.flash = Some((
+                            if matches!(status, Status::Failed) {
+                                format!("✗ watched run of “{job}” FAILED{extra} — ! to inspect")
+                            } else {
+                                format!("🔔 “{job}” run finished: {}{extra}", status.label())
+                            },
+                            Instant::now(),
+                        ));
+                        print!("\x07");
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                    }
+                    !done.is_empty()
+                }
+                Err(oneshot::error::TryRecvError::Empty) => false,
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    self.watch_rx = None;
+                    false
+                }
+            };
+        }
+        if self.watched.is_empty() || self.watch_at.elapsed() < WATCH_INTERVAL {
+            return false;
+        }
+        self.watch_at = Instant::now();
+        let ids: Vec<String> = self.watched.iter().map(|w| w.run_id.clone()).collect();
+        let (tx, rx) = oneshot::channel();
+        self.watch_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            let mut out = Vec::with_capacity(ids.len());
+            for id in ids {
+                out.push((id.clone(), fetchers::runs::state(&cli, &id).await));
+            }
+            let _ = tx.send(out);
+        });
+        false
     }
 
     /// Applies a finished action; refreshes on success. Returns true on change.
@@ -3650,7 +4017,29 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_table, token_at_cursor};
+    use super::{from_table, parse_params, token_at_cursor};
+
+    #[test]
+    fn parse_params_pairs_and_errors() {
+        assert_eq!(parse_params(""), Ok(vec![]));
+        assert_eq!(
+            parse_params(" date=2026-07-18, mode=full "),
+            Ok(vec![
+                ("date".to_string(), "2026-07-18".to_string()),
+                ("mode".to_string(), "full".to_string())
+            ])
+        );
+        // Values keep embedded '='; empty values are fine.
+        assert_eq!(
+            parse_params("expr=a=b, flag="),
+            Ok(vec![
+                ("expr".to_string(), "a=b".to_string()),
+                ("flag".to_string(), String::new())
+            ])
+        );
+        assert!(parse_params("no-equals-here").is_err());
+        assert!(parse_params("=orphan").is_err());
+    }
 
     #[test]
     fn token_bare_word() {

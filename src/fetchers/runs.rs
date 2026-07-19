@@ -23,6 +23,17 @@ pub async fn list(
         .unwrap_or_default())
 }
 
+/// Current state of one run, for the watch list: (status, still-live).
+pub async fn state(cli: &DatabricksCli, run_id: &str) -> Result<(Status, bool), String> {
+    let json = cli
+        .run(&["jobs", "get-run", run_id])
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let status = run_status(&json);
+    let live = matches!(status, Status::Running | Status::Pending);
+    Ok((status, live))
+}
+
 /// One run column of the history grid.
 pub struct GridRun {
     pub run_id: String,

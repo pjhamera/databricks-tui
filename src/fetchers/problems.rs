@@ -63,7 +63,7 @@ async fn scan_one(profile: String) -> Vec<RemoteProblem> {
                         .history
                         .last()
                         .is_some_and(|s| matches!(s, Status::Failed));
-                    if failed_now || failed_last {
+                    if failed_now || failed_last || it.alert.is_some() {
                         out.push(RemoteProblem {
                             profile: profile.clone(),
                             panel: Some(panel),
@@ -71,6 +71,8 @@ async fn scan_one(profile: String) -> Vec<RemoteProblem> {
                             status: it.status,
                             note: if failed_now {
                                 it.detail.unwrap_or_default()
+                            } else if let Some(alert) = it.alert {
+                                alert
                             } else {
                                 "latest run failed".to_string()
                             },

@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Running-long detection: a live job run that has already taken 1.5×
+  the median of its recent successful runs gets an amber `⚠ 2.5× usual`
+  tag in the jobs pane, an entry in the problems view (`!`, local and
+  cross-workspace) and a one-time bell + flash — hung runs no longer
+  sit there looking green
+- Trigger with parameters: `p` on the run confirm opens a prompt
+  prefilled with the job's current parameter defaults (job-level
+  `parameters`, or notebook `base_parameters` merged across tasks);
+  edit the `key=value` pairs and Enter runs the job with the overrides
+- Watch a run (`W` in a run view): the run is polled in the background
+  and a terminal bell + flash fires the moment it finishes, success or
+  failure; a `👁` counter in the header shows how many runs are being
+  watched, and `W` again unwatches
+
 ## [0.26.0] - 2026-07-19
 
 ### Added

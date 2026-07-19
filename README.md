@@ -59,6 +59,13 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   job's recent runs as a matrix — a flaky task shows as scattered ✗ in
   one row, a broken job as a red column — with a duration sparkline per
   task and a `▲1.6×` flag when the latest run is well above its median
+- Running-long detection: a live run that has already taken 1.5× the
+  median of its recent successful runs gets an amber `⚠ 2.5× usual` tag
+  in the jobs pane, a line in the problems view and a one-time bell —
+  hung runs sit there looking green; this is what spots them
+- Watch a run (`W` in a run view): keep doing other things and get a
+  terminal bell + flash the moment it finishes, success or failure —
+  a `👁` counter in the header shows what's being watched
 - Upcoming runs (`u`): every job that will run again on its own — cron
   schedules, periodic and file-arrival triggers, continuous jobs —
   sorted by next fire time with countdowns, and `⏱ in 27m` shown right
@@ -70,6 +77,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Act on resources: start/stop clusters, warehouses and pipelines, trigger
   job runs — and `S` pauses/resumes a job's schedule or trigger in place,
   with `⏸ paused` shown right in the jobs pane
+- Trigger with parameters: `p` on the run confirm opens a prompt
+  prefilled with the job's current parameter defaults — edit
+  `key=value` pairs and run; sent as job parameters or notebook
+  params, whichever the job uses
 - Inspect access: effective Unity Catalog grants (with inheritance) and
   workspace object ACLs for any selected item
 - Warehouse details include recent query history: who ran what, how long
@@ -182,6 +193,7 @@ them can be slow on busy workspaces.
 | `t` (run view) | Timeline: per-task Gantt of the run on a shared time axis |
 | `d` (run view) | DAG: the run's tasks as a dependency tree, colored by state |
 | `g` (run view) | History grid: task states across recent runs, with duration trends |
+| `W` (run view) | Watch the run: terminal bell + flash when it finishes |
 | `u` | Upcoming runs: what fires next across all scheduled/triggered jobs, soonest first; `Enter` jumps to the job |
 | `a` / `x` (secrets pane) | Create scope or add secret (masked) / delete with confirm |
 | `Backspace` | Go up one level in the Unity Catalog tree |
@@ -189,6 +201,7 @@ them can be slow on busy workspaces.
 | `L` | Lineage tree: up to 3 hops upstream/downstream of the selected table/view |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
+| `p` (run confirm) | Edit parameters before the run: prefilled `key=value` prompt |
 | `S` (jobs pane) | Pause / resume the job's schedule, trigger or continuous mode |
 | `g` | Show access: effective grants / permissions for the selected item |
 | `$` | DBU usage for the last 14 days (queries system tables on a warehouse) |

@@ -29,6 +29,7 @@ pub async fn fetch(cli: &DatabricksCli, scope: Option<&str>) -> Result<Shape> {
                         status: Status::Unknown("SCOPE".to_string()),
                         detail: s["backend_type"].as_str().map(str::to_string),
                         history: Vec::new(),
+                        alert: None,
                     }
                 })
                 .collect()
@@ -48,6 +49,7 @@ pub async fn fetch(cli: &DatabricksCli, scope: Option<&str>) -> Result<Shape> {
                             .as_u64()
                             .map(|t| format!("updated {}", relative_time(t))),
                         history: Vec::new(),
+                        alert: None,
                     }
                 })
                 .collect()

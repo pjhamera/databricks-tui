@@ -14,6 +14,7 @@ pub async fn fetch(cli: &DatabricksCli) -> Result<Shape> {
                     detail: p["pipeline_id"].as_str().map(str::to_string),
                     id: p["pipeline_id"].as_str().map(str::to_string),
                     history: Vec::new(),
+                    alert: None,
                 })
                 .collect()
         })

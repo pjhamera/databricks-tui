@@ -295,6 +295,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.secret_form.is_some() {
             draw_secret_form(f, root[1], app, &p);
         }
+        if app.param_form.is_some() {
+            draw_param_form(f, root[1], app, &p);
+        }
         if app.help {
             draw_help(f, root[1], app, &p);
         }
@@ -391,6 +394,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.secret_form.is_some() {
         draw_secret_form(f, root[1], app, &p);
     }
+    if app.param_form.is_some() {
+        draw_param_form(f, root[1], app, &p);
+    }
     if app.help {
         draw_help(f, root[1], app, &p);
     }
@@ -454,6 +460,65 @@ fn draw_secret_form(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             },
         ]));
     }
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+fn draw_param_form(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(form) = &app.param_form else {
+        return;
+    };
+    let width = 70.min(area.width.saturating_sub(4));
+    let height = 6.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ▸ ", Style::default().fg(p.warn)),
+            Span::styled(
+                format!("Run “{}” with parameters ", form.job),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(p.warn).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 0));
+    let lines = if form.loading {
+        vec![Line::from(Span::styled(
+            format!("{} loading current parameters…", app.spinner()),
+            Style::default().fg(p.warn),
+        ))]
+    } else {
+        // Caret rendered by splitting the input at the cursor.
+        let at = form
+            .input
+            .char_indices()
+            .nth(form.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(form.input.len());
+        let kind = match form.kind {
+            crate::fetchers::jobs::ParamKind::Job => "job parameters",
+            crate::fetchers::jobs::ParamKind::Notebook => "notebook parameters",
+        };
+        vec![
+            Line::from(vec![
+                Span::styled("❯ ", Style::default().fg(p.warn)),
+                Span::styled(&form.input[..at], Style::default().fg(p.text)),
+                Span::styled("▏", Style::default().fg(p.warn)),
+                Span::styled(&form.input[at..], Style::default().fg(p.text)),
+            ]),
+            Line::default(),
+            Line::from(Span::styled(
+                format!("key=value, comma-separated · sent as {kind} · empty runs as-is"),
+                Style::default().fg(p.dim),
+            )),
+        ]
+    };
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
@@ -565,6 +630,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             "Focused pane",
             &[
                 ("s", "start / stop / run the selected item"),
+                ("p", "jobs: on the run confirm, edit parameters first"),
                 ("S", "jobs: pause / resume the schedule or trigger"),
                 ("g", "access: grants and permissions"),
                 ("o", "open in the workspace web UI"),
@@ -590,6 +656,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("d", "dag: task dependency tree of the run"),
                 ("g", "grid: task states across recent runs, with trends"),
                 ("r", "repair a failed run — reruns only failed tasks"),
+                ("W", "watch the run — bell + flash when it finishes"),
                 ("s", "cancel the shown run"),
                 ("j / k, J", "scroll · toggle raw JSON"),
             ],
@@ -2521,6 +2588,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             ));
         }
     }
+    // Runs being watched for completion (W in a run view).
+    if !app.watched.is_empty() {
+        left.push(Span::styled("  ", Style::default()));
+        left.push(Span::styled(
+            format!("👁 {}", app.watched.len()),
+            Style::default().fg(p.warn),
+        ));
+    }
     f.render_widget(Paragraph::new(Line::from(left)), inner);
 
     let right = if app.loading {
@@ -2543,15 +2618,20 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let dim = |t: &'static str| Span::styled(t, Style::default().fg(p.dim));
 
     if let Some(confirm) = &app.confirm {
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 format!(" ⚠ {} ", confirm.message),
                 Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
             ),
             key("y"),
-            dim(" confirm · any other key cancels"),
-        ]);
-        f.render_widget(Paragraph::new(line), area);
+            dim(" confirm · "),
+        ];
+        if confirm.params.is_some() {
+            spans.push(key("p"));
+            spans.push(dim(" edit parameters · "));
+        }
+        spans.push(dim("any other key cancels"));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
 
@@ -2591,7 +2671,15 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         }
     }
 
-    let mut spans = if app.secret_form.is_some() {
+    let mut spans = if app.param_form.is_some() {
+        vec![
+            dim(" type key=value pairs   "),
+            key("enter"),
+            dim(" run   "),
+            key("esc"),
+            dim(" cancel"),
+        ]
+    } else if app.secret_form.is_some() {
         vec![
             dim(" type   "),
             key("enter"),
@@ -2809,6 +2897,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 spans.push(dim(" grid   "));
                 spans.push(key("r"));
                 spans.push(dim(" repair   "));
+                spans.push(key("W"));
+                spans.push(dim(
+                    if app.watched.iter().any(|w| {
+                        rv.runs
+                            .get(rv.idx)
+                            .is_some_and(|(id, _, _)| *id == w.run_id)
+                    }) {
+                        " unwatch   "
+                    } else {
+                        " watch   "
+                    },
+                ));
             }
             spans.extend([
                 key("s"),
@@ -3119,9 +3219,11 @@ fn draw_panel(
                         }
                     }
                     if let Some(detail) = &item.detail {
+                        // A running-long warning turns the detail amber.
+                        let fg = if item.alert.is_some() { p.warn } else { p.dim };
                         spans.push(Span::styled(
                             format!("  {}", detail),
-                            dimmed(Style::default().fg(p.dim)),
+                            dimmed(Style::default().fg(fg)),
                         ));
                     }
                     ListItem::new(Line::from(spans))

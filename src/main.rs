@@ -217,6 +217,12 @@ async fn run(
         if app.poll_action(&cli) {
             needs_redraw = true;
         }
+        if app.poll_param() {
+            needs_redraw = true;
+        }
+        if app.poll_watch(&cli) {
+            needs_redraw = true;
+        }
         if app.poll_uc() {
             needs_redraw = true;
         }
@@ -297,12 +303,36 @@ async fn run(
                             app.confirm_execute(&cli);
                             needs_redraw = true;
                         }
+                        (KeyCode::Char('p') | KeyCode::Char('P'), _)
+                            if app.confirm.as_ref().is_some_and(|c| c.params.is_some()) =>
+                        {
+                            app.open_param_form(&cli);
+                            needs_redraw = true;
+                        }
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                         _ => {
                             app.cancel_confirm();
                             needs_redraw = true;
                         }
                     }
+                } else if app.param_form.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) => app.close_param_form(),
+                        (KeyCode::Enter, _) => app.param_submit(&cli),
+                        (KeyCode::Backspace, _) => app.param_pop(),
+                        (KeyCode::Left, _) => app.param_left(),
+                        (KeyCode::Right, _) => app.param_right(),
+                        (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+                            app.param_home()
+                        }
+                        (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+                            app.param_end()
+                        }
+                        (KeyCode::Char(ch), _) => app.param_push(ch),
+                        _ => {}
+                    }
+                    needs_redraw = true;
                 } else if app.picker.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -647,6 +677,10 @@ async fn run(
                         }
                         (KeyCode::Char('s'), _) => {
                             app.request_run_cancel();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('W'), _) => {
+                            app.toggle_watch();
                             needs_redraw = true;
                         }
                         _ => {}
