@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>databricks-tui — Terminal dashboard for Databricks</title>
+<meta name="description" content="A fast terminal dashboard for Databricks. Monitor compute, Lakeflow jobs and pipelines, SQL warehouses, Unity Catalog, costs and lineage — debug failed runs and query the lakehouse without leaving your terminal.">
+<link rel="canonical" href="https://pjhamera.github.io/databricks-tui/">
+
+<!-- Open Graph / social preview -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="databricks-tui — Terminal dashboard for Databricks">
+<meta property="og:description" content="Monitor compute, jobs, pipelines, SQL warehouses and Unity Catalog — debug failed runs and query the lakehouse, all from your terminal.">
+<meta property="og:image" content="https://pjhamera.github.io/databricks-tui/demo.gif">
+<meta property="og:url" content="https://pjhamera.github.io/databricks-tui/">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231e1e2e'/%3E%3Ctext x='50' y='72' font-size='64' text-anchor='middle' fill='%23ff3621'%3E%E2%96%B8%3C/text%3E%3C/svg%3E">
+
+<style>
+  :root {
+    --bg: #181825;
+    --bg2: #1e1e2e;
+    --panel: #24273a;
+    --border: #313244;
+    --text: #cdd6f4;
+    --muted: #9399b2;
+    --dim: #6c7086;
+    --brand1: #ff3621; /* Databricks red */
+    --brand2: #ff8a3c;
+    --green: #a6e3a1;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #2a2140 0%, var(--bg) 55%) no-repeat, var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  header.hero { text-align: center; padding: 72px 0 32px; }
+  .wordmark {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(34px, 6vw, 56px);
+    letter-spacing: -0.5px;
+    margin: 0;
+    background: linear-gradient(90deg, var(--brand1), var(--brand2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .wordmark .tick { -webkit-text-fill-color: var(--brand1); }
+  .tagline {
+    font-size: clamp(17px, 2.4vw, 22px);
+    color: var(--text);
+    max-width: 640px;
+    margin: 18px auto 6px;
+  }
+  .subtagline { color: var(--muted); max-width: 620px; margin: 0 auto 28px; }
+
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 26px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px;
+    border: 1px solid var(--border); color: var(--text); background: var(--panel);
+    transition: transform .06s ease, border-color .2s ease, background .2s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); border-color: var(--dim); }
+  .btn.primary {
+    background: linear-gradient(90deg, var(--brand1), var(--brand2));
+    border-color: transparent; color: #1a1015;
+  }
+  .btn.primary:hover { filter: brightness(1.06); }
+
+  .install {
+    display: inline-flex; align-items: stretch; gap: 0;
+    font-family: var(--mono); font-size: 15px;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; max-width: 100%;
+  }
+  .install code { padding: 12px 16px; color: var(--text); white-space: nowrap; overflow-x: auto; }
+  .install code .prompt { color: var(--dim); user-select: none; }
+  .install button {
+    border: 0; border-left: 1px solid var(--border); background: var(--panel);
+    color: var(--muted); font-family: var(--sans); font-weight: 600; font-size: 13px;
+    padding: 0 16px; cursor: pointer; transition: color .2s, background .2s;
+  }
+  .install button:hover { color: var(--text); background: var(--border); }
+
+  .demo { margin: 40px 0 8px; }
+  .demo figure {
+    margin: 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,.6); background: #000;
+  }
+  .demo video, .demo img { display: block; width: 100%; height: auto; }
+  .demo figcaption { color: var(--dim); font-size: 13px; text-align: center; margin-top: 12px; }
+
+  .note {
+    text-align: center; color: var(--muted); font-size: 14px;
+    max-width: 680px; margin: 22px auto 0;
+  }
+  .note strong { color: var(--text); font-weight: 600; }
+
+  section { padding: 56px 0; }
+  h2 { font-size: clamp(24px, 3.4vw, 30px); margin: 0 0 8px; letter-spacing: -0.3px; }
+  .section-sub { color: var(--muted); margin: 0 0 32px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px 22px 20px; transition: border-color .2s ease, transform .1s ease;
+  }
+  .card:hover { border-color: var(--dim); transform: translateY(-2px); }
+  .card .ico { font-size: 22px; line-height: 1; }
+  .card h3 { margin: 12px 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  .steps {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    padding: 8px 4px;
+  }
+  .steps pre {
+    margin: 0; padding: 22px 24px; overflow-x: auto;
+    font-family: var(--mono); font-size: 14px; line-height: 1.8; color: var(--text);
+  }
+  .steps .c { color: var(--dim); }
+  .steps .k { color: var(--brand2); }
+
+  footer {
+    border-top: 1px solid var(--border); margin-top: 24px;
+    padding: 40px 0 60px; color: var(--muted); font-size: 14px; text-align: center;
+  }
+  footer .links { margin-bottom: 14px; display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+  footer .disclaimer { max-width: 640px; margin: 0 auto; color: var(--dim); font-size: 13px; }
+
+  .copied-flash { color: var(--green) !important; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <h1 class="wordmark"><span class="tick">▸</span> databricks-tui</h1>
+    <p class="tagline">Your Databricks workspace, in the terminal.</p>
+    <p class="subtagline">
+      Monitor compute, Lakeflow jobs and pipelines, SQL warehouses and Unity Catalog —
+      debug failed runs, watch what's running, and query the lakehouse — without opening a browser.
+    </p>
+
+    <div class="cta">
+      <div class="install">
+        <code><span class="prompt">$ </span><span id="install-cmd">brew install pjhamera/tap/databricks-tui</span></code>
+        <button id="copy-btn" onclick="copyInstall()">Copy</button>
+      </div>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/pjhamera/databricks-tui">★ Star on GitHub</a>
+      <a class="btn" href="https://github.com/pjhamera/databricks-tui/releases">Download a release</a>
+    </div>
+
+    <div class="demo">
+      <figure>
+        <video autoplay loop muted playsinline poster="demo.gif">
+          <source src="demo.mp4" type="video/mp4">
+          <img src="demo.gif" alt="databricks-tui in action: dashboard, run debugging, SQL console and cost view">
+        </video>
+      </figure>
+      <figcaption>A live tour — dashboard, run debugging, history grid, SQL console, lineage and spend.</figcaption>
+    </div>
+
+    <p class="note">
+      <strong>Nothing leaves your machine.</strong> It drives the official Databricks CLI
+      with your own credentials and talks only to your workspace. Community project —
+      not affiliated with or endorsed by Databricks, Inc.
+    </p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="section-sub">Everything you keep flipping browser tabs for, on one screen.</p>
+    <div class="grid">
+
+      <div class="card">
+        <div class="ico">🧭</div>
+        <h3>One dashboard for everything</h3>
+        <p>Compute, Lakeflow jobs &amp; pipelines, SQL warehouses, AI/BI dashboards and Unity Catalog — each pane populates independently, active work floated to the top.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">🐞</div>
+        <h3>Debug runs in the terminal</h3>
+        <p>Drill into any run for per-task states and the actual error output. Full log tail (<code>o</code>), Gantt timeline (<code>t</code>), task DAG (<code>d</code>), and <code>r</code> repairs just the failed tasks.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">🚨</div>
+        <h3>Problems, everywhere at once</h3>
+        <p><code>!</code> lists everything currently failing — across <em>every</em> configured workspace — and rings the bell the moment a new failure appears between refreshes.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">⚠️</div>
+        <h3>Catch hung runs that look green</h3>
+        <p>A live run past 1.5× its usual median gets an amber <code>⚠ 2.5× usual</code> tag and a one-time bell. <code>W</code> watches any run and pings you when it finishes.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">⌨️</div>
+        <h3>SQL console for the whole lakehouse</h3>
+        <p>Syntax-highlighted as you type, Tab-completes catalog/schema/table/column names from Unity Catalog, history search, <code>$EDITOR</code> for multi-line, CSV export.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">🗂️</div>
+        <h3>Unity Catalog &amp; lineage</h3>
+        <p>Drill catalogs → schemas → tables → volumes → files, preview sample rows, read the full schema, and follow a table's lineage 3 hops up and downstream as a tree.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">💸</div>
+        <h3>See where the money goes</h3>
+        <p>14 days of DBU usage as stacked daily bars by SKU family, with list-price dollar estimates and a top-spenders table naming the jobs, clusters and warehouses behind it.</p>
+      </div>
+
+      <div class="card">
+        <div class="ico">🎨</div>
+        <h3>Yours to arrange</h3>
+        <p>Hide and reorder panes, zoom any pane full-screen, eight color themes — all persisted per profile. Non-blocking refresh, so the UI never freezes.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Get started</h2>
+    <p class="section-sub">You need the authenticated <a href="https://docs.databricks.com/dev-tools/cli/databricks-cli.html">Databricks CLI v0.200+</a>. That's it.</p>
+    <div class="steps">
+<pre><span class="c"># Install (macOS &amp; Linux)</span>
+<span class="k">brew</span> install pjhamera/tap/databricks-tui
+
+<span class="c"># ...or with cargo</span>
+<span class="k">cargo</span> install databricks-tui
+
+<span class="c"># Launch — default profile, 30s refresh</span>
+<span class="k">databricks-tui</span>
+
+<span class="c"># A named profile, faster refresh, a theme</span>
+<span class="k">databricks-tui</span> --profile prod --refresh 10 --theme catppuccin-mocha
+
+<span class="c"># Press ? at any time for every keybinding, grouped by context</span></pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/pjhamera/databricks-tui">GitHub</a>
+      <a href="https://github.com/pjhamera/databricks-tui/releases">Releases</a>
+      <a href="https://github.com/pjhamera/databricks-tui/blob/master/docs/permissions.md">Permissions</a>
+      <a href="https://github.com/pjhamera/databricks-tui/blob/master/docs/troubleshooting.md">Troubleshooting</a>
+    </div>
+    <p class="disclaimer">
+      MIT licensed. A community project — not affiliated with, endorsed by, or supported by
+      Databricks, Inc. Databricks and the Databricks logo are trademarks of Databricks, Inc.
+    </p>
+  </div>
+</footer>
+
+<script>
+  function copyInstall() {
+    var text = document.getElementById('install-cmd').textContent;
+    var btn = document.getElementById('copy-btn');
+    navigator.clipboard.writeText(text).then(function () {
+      var old = btn.textContent;
+      btn.textContent = 'Copied ✓';
+      btn.classList.add('copied-flash');
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('copied-flash'); }, 1600);
+    });
+  }
+</script>
+</body>
+</html>
