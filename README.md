@@ -1,5 +1,9 @@
 # databricks-tui
 
+[![crates.io](https://img.shields.io/crates/v/databricks-tui.svg)](https://crates.io/crates/databricks-tui)
+[![downloads](https://img.shields.io/crates/d/databricks-tui.svg)](https://crates.io/crates/databricks-tui)
+[![license](https://img.shields.io/crates/l/databricks-tui.svg)](https://github.com/pjhamera/databricks-tui/blob/master/LICENSE)
+
 Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL warehouses, dashboards, and Unity Catalog in one view.
 
 **[→ pjhamera.github.io/databricks-tui](https://pjhamera.github.io/databricks-tui/)**
