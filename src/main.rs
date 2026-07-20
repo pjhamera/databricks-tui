@@ -197,6 +197,17 @@ fn edit_sql_in_editor(
     Ok(())
 }
 
+/// Minimum time between flushed frames. 16 ms ≈ 60 fps — fast enough to feel
+/// instant, slow enough that bursts of key-repeat events or fast poll results
+/// can't flood the terminal's write buffer, which is the real cause of the
+/// sluggish / frozen look. Redraws are coalesced, never dropped.
+const MIN_FRAME: Duration = Duration::from_millis(16);
+
+/// Cadence for advancing the spinner / splash animation. Kept independent of
+/// the frame rate so the animation runs at a steady ~12 fps regardless of how
+/// often the loop wakes or draws.
+const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
+
 async fn run(
     terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -204,6 +215,14 @@ async fn run(
 ) -> Result<()> {
     terminal.draw(|f| ui::draw(f, app))?;
     let mut last_tick = Instant::now();
+    // When the last frame was actually flushed, so rapid updates can be
+    // coalesced without delaying the first one.
+    let mut last_draw = Instant::now();
+    // Wall clock for the animation, decoupled from the draw rate.
+    let mut last_spin = Instant::now();
+    // A redraw is owed but the frame interval hasn't elapsed yet. Checked
+    // every iteration so the pending frame is never lost.
+    let mut pending_draw = false;
 
     // Workspace host for "open in browser", resolved in the background.
     app.fetch_host(&cli);
@@ -254,11 +273,12 @@ async fn run(
             needs_redraw = true;
         }
 
-        // Splash: animate fast, expire on its deadline.
+        // Splash expires on its deadline; the animation itself is driven by
+        // the spinner clock below, not by redrawing every iteration.
         if let Some(t) = app.splash_until {
-            needs_redraw = true;
             if Instant::now() >= t {
                 app.splash_until = None;
+                needs_redraw = true;
             }
         }
 
@@ -276,14 +296,21 @@ async fn run(
             needs_redraw = true;
         }
 
-        // Poll faster while anything is loading so spinners animate smoothly.
-        let timeout = if app.splash_active() {
-            Duration::from_millis(70)
-        } else if app.busy() || app.any_fresh() {
+        // Sleep until the next thing that has to happen. Idle means a long
+        // wait; anything animating or with a frame owed shortens it so the
+        // deadline isn't overshot. Buffered input wakes poll() immediately
+        // regardless, so this only governs how long we idle.
+        let mut timeout = if app.busy() || app.any_fresh() {
             Duration::from_millis(100)
         } else {
             Duration::from_millis(250)
         };
+        if pending_draw {
+            timeout = timeout.min(MIN_FRAME.saturating_sub(last_draw.elapsed()));
+        }
+        if app.busy() || app.splash_active() {
+            timeout = timeout.min(SPINNER_INTERVAL.saturating_sub(last_spin.elapsed()));
+        }
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
@@ -857,7 +884,10 @@ async fn run(
             }
         }
 
-        if app.busy() || app.splash_active() {
+        // Advance the animation on its own fixed cadence, so it looks the same
+        // whether the loop is drawing 1 fps (idle) or 60 fps (interacting).
+        if (app.busy() || app.splash_active()) && last_spin.elapsed() >= SPINNER_INTERVAL {
+            last_spin = Instant::now();
             app.tick_spinner();
             needs_redraw = true;
         }
@@ -866,7 +896,18 @@ async fn run(
         }
 
         if needs_redraw {
+            pending_draw = true;
+        }
+
+        // Coalesce: flush to the terminal at most once per frame interval. A
+        // burst of events sets pending_draw many times but only produces one
+        // frame, which is what keeps the terminal's write buffer from backing
+        // up. When a draw is skipped, the shortened poll timeout above wakes us
+        // in time to flush it on the next iteration.
+        if pending_draw && last_draw.elapsed() >= MIN_FRAME {
             terminal.draw(|f| ui::draw(f, app))?;
+            last_draw = Instant::now();
+            pending_draw = false;
         }
     }
     Ok(())
