@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.27.1] - 2026-07-20
+
+### Fixed
+- Sluggish and occasionally frozen terminal under fast input or busy
+  refreshes: redraws are now coalesced and capped at ~60 fps instead of
+  one full-screen draw per event, so a burst of key-repeat events no
+  longer floods the terminal's write buffer. The spinner and splash
+  animation run on an independent clock, and the loop still idles at
+  ~0% CPU
+
 ## [0.27.0] - 2026-07-19
 
 ### Added
