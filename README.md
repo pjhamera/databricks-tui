@@ -1,6 +1,8 @@
 # databricks-tui
 
+[![CI](https://github.com/pjhamera/databricks-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/pjhamera/databricks-tui/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/databricks-tui.svg)](https://crates.io/crates/databricks-tui)
+[![release](https://img.shields.io/github/v/release/pjhamera/databricks-tui)](https://github.com/pjhamera/databricks-tui/releases/latest)
 [![downloads](https://img.shields.io/crates/d/databricks-tui.svg)](https://crates.io/crates/databricks-tui)
 [![license](https://img.shields.io/crates/l/databricks-tui.svg)](https://github.com/pjhamera/databricks-tui/blob/master/LICENSE)
 
