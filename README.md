@@ -2,6 +2,8 @@
 
 Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL warehouses, dashboards, and Unity Catalog in one view.
 
+**[→ pjhamera.github.io/databricks-tui](https://pjhamera.github.io/databricks-tui/)**
+
 ![demo](docs/demo.gif)
 
 > Community project — not affiliated with, endorsed by, or supported by
