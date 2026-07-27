@@ -10,11 +10,19 @@ pub enum ThemeMode {
     Dark,
     Light,
     CatppuccinMocha,
+    CatppuccinMacchiato,
+    CatppuccinFrappe,
     CatppuccinLatte,
     GruvboxDark,
+    GruvboxLight,
     Dracula,
     Nord,
     TokyoNight,
+    RosePine,
+    Everforest,
+    Kanagawa,
+    SolarizedDark,
+    OneDark,
 }
 
 impl ThemeMode {
@@ -22,11 +30,19 @@ impl ThemeMode {
         ThemeMode::Dark,
         ThemeMode::Light,
         ThemeMode::CatppuccinMocha,
+        ThemeMode::CatppuccinMacchiato,
+        ThemeMode::CatppuccinFrappe,
         ThemeMode::CatppuccinLatte,
         ThemeMode::GruvboxDark,
+        ThemeMode::GruvboxLight,
         ThemeMode::Dracula,
         ThemeMode::Nord,
         ThemeMode::TokyoNight,
+        ThemeMode::RosePine,
+        ThemeMode::Everforest,
+        ThemeMode::Kanagawa,
+        ThemeMode::SolarizedDark,
+        ThemeMode::OneDark,
     ];
 
     /// The next theme in the cycle — what `t` steps through.
@@ -40,11 +56,19 @@ impl ThemeMode {
             ThemeMode::Dark => "Dark (terminal colors)",
             ThemeMode::Light => "Light",
             ThemeMode::CatppuccinMocha => "Catppuccin Mocha",
+            ThemeMode::CatppuccinMacchiato => "Catppuccin Macchiato",
+            ThemeMode::CatppuccinFrappe => "Catppuccin Frappé",
             ThemeMode::CatppuccinLatte => "Catppuccin Latte",
             ThemeMode::GruvboxDark => "Gruvbox Dark",
+            ThemeMode::GruvboxLight => "Gruvbox Light",
             ThemeMode::Dracula => "Dracula",
             ThemeMode::Nord => "Nord",
             ThemeMode::TokyoNight => "Tokyo Night",
+            ThemeMode::RosePine => "Rosé Pine",
+            ThemeMode::Everforest => "Everforest Dark",
+            ThemeMode::Kanagawa => "Kanagawa",
+            ThemeMode::SolarizedDark => "Solarized Dark",
+            ThemeMode::OneDark => "One Dark",
         }
     }
 
@@ -54,11 +78,19 @@ impl ThemeMode {
             ThemeMode::Dark => "dark",
             ThemeMode::Light => "light",
             ThemeMode::CatppuccinMocha => "catppuccin-mocha",
+            ThemeMode::CatppuccinMacchiato => "catppuccin-macchiato",
+            ThemeMode::CatppuccinFrappe => "catppuccin-frappe",
             ThemeMode::CatppuccinLatte => "catppuccin-latte",
             ThemeMode::GruvboxDark => "gruvbox",
+            ThemeMode::GruvboxLight => "gruvbox-light",
             ThemeMode::Dracula => "dracula",
             ThemeMode::Nord => "nord",
             ThemeMode::TokyoNight => "tokyo-night",
+            ThemeMode::RosePine => "rose-pine",
+            ThemeMode::Everforest => "everforest",
+            ThemeMode::Kanagawa => "kanagawa",
+            ThemeMode::SolarizedDark => "solarized-dark",
+            ThemeMode::OneDark => "one-dark",
         }
     }
 

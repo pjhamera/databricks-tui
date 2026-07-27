@@ -40,11 +40,19 @@ enum ThemeArg {
     Dark,
     Light,
     CatppuccinMocha,
+    CatppuccinMacchiato,
+    CatppuccinFrappe,
     CatppuccinLatte,
     Gruvbox,
+    GruvboxLight,
     Dracula,
     Nord,
     TokyoNight,
+    RosePine,
+    Everforest,
+    Kanagawa,
+    SolarizedDark,
+    OneDark,
 }
 
 impl From<ThemeArg> for ThemeMode {
@@ -53,11 +61,19 @@ impl From<ThemeArg> for ThemeMode {
             ThemeArg::Dark => ThemeMode::Dark,
             ThemeArg::Light => ThemeMode::Light,
             ThemeArg::CatppuccinMocha => ThemeMode::CatppuccinMocha,
+            ThemeArg::CatppuccinMacchiato => ThemeMode::CatppuccinMacchiato,
+            ThemeArg::CatppuccinFrappe => ThemeMode::CatppuccinFrappe,
             ThemeArg::CatppuccinLatte => ThemeMode::CatppuccinLatte,
             ThemeArg::Gruvbox => ThemeMode::GruvboxDark,
+            ThemeArg::GruvboxLight => ThemeMode::GruvboxLight,
             ThemeArg::Dracula => ThemeMode::Dracula,
             ThemeArg::Nord => ThemeMode::Nord,
             ThemeArg::TokyoNight => ThemeMode::TokyoNight,
+            ThemeArg::RosePine => ThemeMode::RosePine,
+            ThemeArg::Everforest => ThemeMode::Everforest,
+            ThemeArg::Kanagawa => ThemeMode::Kanagawa,
+            ThemeArg::SolarizedDark => ThemeMode::SolarizedDark,
+            ThemeArg::OneDark => ThemeMode::OneDark,
         }
     }
 }

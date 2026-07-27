@@ -121,9 +121,11 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Zoom into any pane, non-blocking refresh — the UI never freezes;
   scrollbars mark your place in long output, and unfocused panes dim
   slightly so the active one is obvious at a glance
-- Eight color themes: terminal-default dark, light, Catppuccin Mocha & Latte,
-  Gruvbox, Dracula, Nord and Tokyo Night — `t` cycles, `--theme` picks at
-  launch, and the app remembers your theme and warehouse choice per profile
+- Sixteen color themes: terminal-default dark, light, the full Catppuccin
+  family (Mocha, Macchiato, Frappé, Latte), Gruvbox Dark & Light, Dracula,
+  Nord, Tokyo Night, Rosé Pine, Everforest, Kanagawa, Solarized Dark and
+  One Dark — `t` cycles, `--theme` picks at launch, and the app remembers
+  your theme and warehouse choice per profile
   across sessions (~/.config/databricks-tui/config.json)
 - Built-in self-upgrade from GitHub releases
 
@@ -178,8 +180,11 @@ app keeps are under `~/.config/databricks-tui/` (SQL history, preferences).
 databricks-tui                      # default profile, 30s refresh
 databricks-tui --profile prod       # named CLI profile
 databricks-tui --refresh 10         # refresh every 10 seconds
-databricks-tui --theme light        # or catppuccin-mocha, catppuccin-latte,
-                                    # gruvbox, dracula, nord, tokyo-night
+databricks-tui --theme light        # or catppuccin-mocha, catppuccin-macchiato,
+                                    # catppuccin-frappe, catppuccin-latte, gruvbox,
+                                    # gruvbox-light, dracula, nord, tokyo-night,
+                                    # rose-pine, everforest, kanagawa,
+                                    # solarized-dark, one-dark
 ```
 
 The Clusters pane shows interactive (UI/API-created) clusters only —
@@ -222,7 +227,7 @@ them can be slow on busy workspaces.
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |
 | `Esc` | Close details / exit zoom |
-| `t` | Cycle color themes (dark, light, Catppuccin, Gruvbox, Dracula, Nord, Tokyo Night) |
+| `t` | Cycle color themes (dark, light, Catppuccin, Gruvbox, Dracula, Nord, Tokyo Night, Rosé Pine, Everforest, Kanagawa, Solarized, One Dark) |
 | `H` | Arrange panes: `space` shows/hides, `J`/`K` reorders — layout adapts and persists |
 | `?` | Help: all keybindings grouped by context |
 | `r` | Force refresh |

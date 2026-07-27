@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.29.0] - 2026-07-27
+
+### Added
+- Eight new color themes bring the total to sixteen: the Catppuccin family
+  is now complete (Macchiato and Frappé join Mocha and Latte), plus Gruvbox
+  Light, Rosé Pine, Everforest, Kanagawa, Solarized Dark and One Dark. `t`
+  cycles through all of them and `--theme` accepts the new ids (e.g.
+  `catppuccin-macchiato`, `rose-pine`, `kanagawa`, `one-dark`).
+
 ## [0.28.0] - 2026-07-27
 
 ### Added
