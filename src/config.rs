@@ -17,6 +17,10 @@ pub struct Config {
     /// Pane ids the user has hidden.
     #[serde(default)]
     pub hidden_panes: Vec<String>,
+    /// Favorited item keys per profile → pane id → item keys. The item key
+    /// is the ListItem id when present (job id, catalog full name), else name.
+    #[serde(default)]
+    pub favorites: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
 fn path() -> Option<PathBuf> {

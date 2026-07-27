@@ -123,6 +123,12 @@ impl Default for Status {
     }
 }
 
+/// Stable key identifying an item for the favorites list: its resource id
+/// when present (job id, catalog full name), else the display name.
+pub fn fav_key(item: &ListItem) -> String {
+    item.id.clone().unwrap_or_else(|| item.name.clone())
+}
+
 /// Case-insensitive substring match against an item's name, detail text
 /// and status label — so `/running` greps for running things.
 pub fn item_matches(item: &ListItem, query: &str) -> bool {

@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Favorites: `f` pins/unpins the selected item in any pane (marked with a
+  `★`), and `F` toggles the focused pane to show only favorites. Pins are
+  remembered per workspace profile in `~/.config/databricks-tui/config.json`.
+  Drilling the Unity Catalog into a level with no pinned items shows
+  everything, so favorites-only never dead-ends, and jumping to an item
+  (`Ctrl+P` / problems) clears the filter so the target stays visible.
+
 ## [0.27.1] - 2026-07-20
 
 ### Fixed

@@ -593,6 +593,8 @@ pub struct App {
     pub filters: [String; 7],
     /// True while the user is typing a filter for the focused pane.
     pub filter_entry: bool,
+    /// Per-pane favorites-only toggle; session state, not persisted.
+    pub fav_only: [bool; 7],
     /// Persisted preferences (theme, warehouse per profile).
     pub config: crate::config::Config,
     /// (name, is-slow-warning) pairs needing attention per pane at the
@@ -709,6 +711,7 @@ impl App {
             updated_at: [None; 7],
             filters: Default::default(),
             filter_entry: false,
+            fav_only: [false; 7],
             config: crate::config::Config::load(),
             failed_seen: Default::default(),
             jump: None,
@@ -1015,6 +1018,7 @@ impl App {
         self.zoomed = false;
         self.filters = Default::default();
         self.filter_entry = false;
+        self.fav_only = [false; 7];
         self.failed_seen = Default::default();
         self.jump = None;
         self.sql_stmt = None;
@@ -1105,6 +1109,7 @@ impl App {
         self.reveal_pane(*panel_idx);
         self.focus = Panel::ALL[*panel_idx];
         self.filters[*panel_idx].clear();
+        self.fav_only[*panel_idx] = false;
         if let Some(Shape::List(items)) = &self.shapes[*panel_idx] {
             if let Some(pos) = items.iter().position(|i| &i.name == name) {
                 self.selected[*panel_idx] = pos;
@@ -1243,8 +1248,10 @@ impl App {
         let panel = problem.panel?;
         self.reveal_pane(panel);
         self.focus = Panel::ALL[panel];
-        // The pane's filter could hide the item we're jumping to.
+        // The pane's filter (or favorites-only) could hide the item we're
+        // jumping to.
         self.filters[panel].clear();
+        self.fav_only[panel] = false;
         if let Some(Shape::List(list)) = &self.shapes[panel] {
             if let Some(pos) = list.iter().position(|i| i.name == problem.name) {
                 self.selected[panel] = pos;
@@ -1377,12 +1384,47 @@ impl App {
             .unwrap_or(0)
     }
 
+    /// The favorite keys stored for a pane under the active profile, if any.
+    fn favorite_keys(&self, idx: usize) -> Option<&Vec<String>> {
+        let profile = self.profile.as_deref().unwrap_or("DEFAULT");
+        self.config
+            .favorites
+            .get(profile)
+            .and_then(|panes| panes.get(Panel::ALL[idx].id()))
+    }
+
+    /// Whether an item is favorited in its pane.
+    pub fn is_favorite(&self, idx: usize, item: &crate::shape::ListItem) -> bool {
+        let key = crate::shape::fav_key(item);
+        self.favorite_keys(idx)
+            .is_some_and(|keys| keys.iter().any(|k| k == &key))
+    }
+
+    /// Favorite keys for a pane as a set, for O(1) lookups while rendering.
+    pub fn pane_fav_set(&self, idx: usize) -> std::collections::HashSet<String> {
+        self.favorite_keys(idx)
+            .map(|keys| keys.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether favorites-only is on AND the pane has at least one favorite at
+    /// the current level — so drilling into the catalog never dead-ends.
+    pub fn fav_filter_active(&self, idx: usize) -> bool {
+        self.fav_only[idx]
+            && matches!(&self.shapes[idx], Some(Shape::List(items))
+                if items.iter().any(|it| self.is_favorite(idx, it)))
+    }
+
+    /// The predicate deciding whether an item shows in a pane: text filter
+    /// plus the favorites-only filter when active.
+    fn passes(&self, idx: usize, item: &crate::shape::ListItem) -> bool {
+        crate::shape::item_matches(item, &self.filters[idx])
+            && (!self.fav_filter_active(idx) || self.is_favorite(idx, item))
+    }
+
     fn list_len(&self, idx: usize) -> usize {
         match &self.shapes[idx] {
-            Some(Shape::List(items)) => items
-                .iter()
-                .filter(|it| crate::shape::item_matches(it, &self.filters[idx]))
-                .count(),
+            Some(Shape::List(items)) => items.iter().filter(|it| self.passes(idx, it)).count(),
             _ => 0,
         }
     }
@@ -1412,10 +1454,63 @@ impl App {
         match &self.shapes[idx] {
             Some(Shape::List(items)) => items
                 .iter()
-                .filter(|it| crate::shape::item_matches(it, &self.filters[idx]))
+                .filter(|it| self.passes(idx, it))
                 .nth(self.selection(idx)),
             _ => None,
         }
+    }
+
+    /// Pins/unpins the selected item in the focused pane; persisted at once.
+    pub fn toggle_favorite(&mut self) {
+        let idx = self.focus_index();
+        let Some((key, name)) = self
+            .selected_item()
+            .map(|it| (crate::shape::fav_key(it), it.name.clone()))
+        else {
+            return;
+        };
+        let pane_id = Panel::ALL[idx].id().to_string();
+        let profile = self.profile.as_deref().unwrap_or("DEFAULT").to_string();
+        let list = self
+            .config
+            .favorites
+            .entry(profile)
+            .or_default()
+            .entry(pane_id)
+            .or_default();
+        let pinned = match list.iter().position(|k| k == &key) {
+            Some(pos) => {
+                list.remove(pos);
+                false
+            }
+            None => {
+                list.push(key);
+                true
+            }
+        };
+        self.config.save();
+        let msg = if pinned {
+            format!("★ pinned {name}")
+        } else {
+            format!("☆ unpinned {name}")
+        };
+        self.flash = Some((msg, Instant::now()));
+    }
+
+    /// Toggles favorites-only for the focused pane.
+    pub fn toggle_fav_only(&mut self) {
+        let idx = self.focus_index();
+        self.fav_only[idx] = !self.fav_only[idx];
+        self.selected[idx] = 0;
+        let has_fav = self.favorite_keys(idx).is_some_and(|k| !k.is_empty());
+        let msg = if !self.fav_only[idx] {
+            "showing all".to_string()
+        } else if has_fav {
+            "★ favorites only".to_string()
+        } else {
+            "★ favorites only — none pinned yet (press f)".to_string()
+        };
+        self.flash = Some((msg, Instant::now()));
     }
 
     /// Opens filter entry for the focused pane, starting from scratch.

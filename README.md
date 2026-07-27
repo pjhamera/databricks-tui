@@ -50,6 +50,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   straight into that workspace
 - Command palette (`Ctrl+P`): fuzzy-search every loaded resource across
   panes and jump straight to it
+- Favorites: `f` pins the selected item (a job, a catalog, anything) with
+  a `★`, `F` filters the pane to just your pinned items — remembered per
+  workspace in `~/.config/databricks-tui/config.json`, so your key jobs
+  and catalogs surface first on a crowded workspace
 - Cancel from where you stand: `s` in a run/update view cancels it, and
   Esc on a running SQL statement cancels it server-side instead of
   leaving it burning the warehouse
@@ -211,6 +215,7 @@ them can be slow on busy workspaces.
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
 | `p` (run confirm) | Edit parameters before the run: prefilled `key=value` prompt |
 | `S` (jobs pane) | Pause / resume the job's schedule, trigger or continuous mode |
+| `f` / `F` | Pin/unpin the selected item as a favorite (`★`) / show only favorites in the focused pane |
 | `g` | Show access: effective grants / permissions for the selected item |
 | `$` | DBU usage for the last 14 days (queries system tables on a warehouse) |
 | `o` | Open selected item in the workspace web UI |

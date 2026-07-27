@@ -271,6 +271,8 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.spinner(),
             &app.filters[idx],
             app.filter_entry,
+            &app.pane_fav_set(idx),
+            app.fav_filter_active(idx),
             &p,
         );
         // Overlays must still render on top of the zoomed pane.
@@ -368,6 +370,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                 app.spinner(),
                 &app.filters[i],
                 app.filter_entry && focused,
+                &app.pane_fav_set(i),
+                app.fav_filter_active(i),
                 &p,
             );
         }
@@ -632,6 +636,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("s", "start / stop / run the selected item"),
                 ("p", "jobs: on the run confirm, edit parameters first"),
                 ("S", "jobs: pause / resume the schedule or trigger"),
+                ("f", "pin / unpin the selected item as a favorite"),
+                ("F", "show only favorites in the focused pane"),
                 ("g", "access: grants and permissions"),
                 ("o", "open in the workspace web UI"),
             ],
@@ -3083,6 +3089,8 @@ fn draw_panel(
     spinner: &str,
     filter: &str,
     entering: bool,
+    favs: &std::collections::HashSet<String>,
+    fav_only: bool,
     p: &Palette,
 ) {
     let accent = accent(panel, p);
@@ -3107,7 +3115,10 @@ fn draw_panel(
         Some(Shape::List(items)) => Some(
             items
                 .iter()
-                .filter(|it| crate::shape::item_matches(it, filter))
+                .filter(|it| {
+                    crate::shape::item_matches(it, filter)
+                        && (!fav_only || favs.contains(&crate::shape::fav_key(it)))
+                })
                 .collect(),
         ),
         _ => None,
@@ -3142,6 +3153,12 @@ fn draw_panel(
     if entering || !filter.is_empty() {
         title_spans.push(Span::styled(
             format!("/{}{} ", filter, if entering { "▏" } else { "" }),
+            Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if fav_only {
+        title_spans.push(Span::styled(
+            "★only ",
             Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
         ));
     }
@@ -3203,7 +3220,13 @@ fn draw_panel(
                                 .add_modifier(Modifier::BOLD),
                         ),
                     };
+                    let star = if favs.contains(&crate::shape::fav_key(item)) {
+                        Span::styled("★ ", Style::default().fg(p.warn))
+                    } else {
+                        Span::raw("  ")
+                    };
                     let mut spans = vec![
+                        star,
                         Span::styled("● ", Style::default().fg(color)),
                         Span::styled(item.name.as_str(), dimmed(Style::default().fg(p.text))),
                         Span::raw("  "),

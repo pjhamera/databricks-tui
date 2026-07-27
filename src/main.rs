@@ -832,6 +832,14 @@ async fn run(
                             app.request_schedule_toggle(&cli);
                             needs_redraw = true;
                         }
+                        (KeyCode::Char('f'), _) => {
+                            app.toggle_favorite();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('F'), _) => {
+                            app.toggle_fav_only();
+                            needs_redraw = true;
+                        }
                         (KeyCode::Char('o'), _) => {
                             app.open_in_browser();
                         }
