@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.28.0] - 2026-07-27
 
 ### Added
 - Favorites: `f` pins/unpins the selected item in any pane (marked with a
