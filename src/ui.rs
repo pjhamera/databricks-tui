@@ -1,4 +1,5 @@
 use crate::app::{App, Panel, ThemeMode};
+use crate::fetchers;
 use crate::shape::{DetailData, Shape, Status, TableData};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -372,6 +373,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.cost.is_some() {
         draw_cost(f, root[1], app, &p);
+        return;
+    }
+
+    if app.item_cost.is_some() {
+        draw_item_cost(f, root[1], app, &p);
         return;
     }
 
@@ -770,6 +776,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             "Focused pane",
             &[
                 ("s", "start / stop / run the selected item"),
+                ("c", "jobs/pipelines: spend over week, month, quarter, year"),
                 ("p", "jobs: on the run confirm, edit parameters first"),
                 ("S", "jobs: pause / resume the schedule or trigger"),
                 ("f", "pin / unpin the selected item as a favorite"),
@@ -1540,6 +1547,177 @@ fn draw_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                     ]));
                 }
             }
+
+            let par = Paragraph::new(lines).block(block);
+            f.render_widget(par, area);
+        }
+    }
+}
+
+/// Bars for the per-item spend view: one row per calendar month.
+fn month_bars(
+    months: &[(String, f64, f64)],
+    priced: bool,
+    width: usize,
+    p: &Palette,
+) -> Vec<Line<'static>> {
+    let max = months
+        .iter()
+        .map(|(_, dbus, _)| *dbus)
+        .fold(0.0_f64, f64::max)
+        .max(f64::EPSILON);
+    let bar_w = width.saturating_sub(30).max(10);
+    months
+        .iter()
+        .map(|(month, dbus, usd)| {
+            let chars =
+                ((dbus / max) * bar_w as f64)
+                    .round()
+                    .max(if *dbus > 0.0 { 1.0 } else { 0.0 }) as usize;
+            let amount = if priced {
+                format!("  {dbus:.1} · ${usd:.2}")
+            } else {
+                format!("  {dbus:.1}")
+            };
+            Line::from(vec![
+                Span::styled(format!("{month:<9}"), Style::default().fg(p.dim)),
+                Span::styled("█".repeat(chars), Style::default().fg(p.jobs)),
+                Span::styled(amount, Style::default().fg(p.text)),
+            ])
+        })
+        .collect()
+}
+
+fn draw_item_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let cv = app.item_cost.as_ref().unwrap();
+    let scope = match &cv.data {
+        Some(Ok(d)) if d.scoped => " · this workspace",
+        Some(Ok(_)) => " · all workspaces",
+        _ => "",
+    };
+    let title = Line::from(vec![
+        Span::styled(" ◢◤ ", Style::default().fg(p.brand)),
+        Span::styled(
+            format!("Spend · {} ", cv.name),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("· {}{scope} · via {} ", cv.kind.label(), cv.warehouse),
+            Style::default().fg(p.dim),
+        ),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.brand).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 1));
+
+    match &cv.data {
+        None => {
+            let par = Paragraph::new(format!(
+                "{} querying system.billing.usage — the warehouse may need to start…",
+                app.spinner()
+            ))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!(
+                "✗ {e}\n\nsystem tables need to be enabled and readable \
+                 (grants on the `system` catalog)"
+            ))
+            .style(Style::default().fg(p.err))
+            .wrap(Wrap { trim: false })
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(data)) if data.is_empty() => {
+            // Usage only carries a job_id for job and serverless compute,
+            // so an all-purpose job legitimately shows nothing here.
+            let hint = match data.kind {
+                fetchers::cost::ResourceKind::Job => {
+                    "\n\nruns on all-purpose compute aren't attributed to a job id — \
+                     only job compute and serverless are"
+                }
+                fetchers::cost::ResourceKind::Pipeline => "",
+            };
+            let par = Paragraph::new(format!(
+                "∅ no usage attributed to this {} in the last 365 days{hint}",
+                data.kind.label()
+            ))
+            .style(Style::default().fg(p.dim))
+            .wrap(Wrap { trim: false })
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(data)) => {
+            let mut lines: Vec<Line> = vec![Line::from(vec![
+                Span::styled(
+                    format!("{:<14}{:>12}", "PERIOD", "DBU"),
+                    Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    if data.priced {
+                        format!("{:>12}{:>14}", "USD", "VS PRIOR")
+                    } else {
+                        format!("{:>14}", "VS PRIOR")
+                    },
+                    Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+                ),
+            ])];
+            for w in &data.windows {
+                let mut spans = vec![
+                    Span::styled(format!("{:<14}", w.label), Style::default().fg(p.text)),
+                    Span::styled(
+                        format!("{:>12.1}", w.dbus),
+                        Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                    ),
+                ];
+                if data.priced {
+                    spans.push(Span::styled(
+                        format!("{:>12}", format!("${:.2}", w.usd)),
+                        Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                // Rising spend is the thing worth noticing, so it is warned.
+                let (trend, color) = match w.trend(data.priced) {
+                    Some(pct) if pct > 0.005 => (format!("▲ {:.0}%", pct * 100.0), p.warn),
+                    Some(pct) if pct < -0.005 => (format!("▼ {:.0}%", -pct * 100.0), p.ok),
+                    Some(_) => ("~ flat".to_string(), p.dim),
+                    None => ("—".to_string(), p.dim),
+                };
+                spans.push(Span::styled(
+                    format!("{trend:>14}"),
+                    Style::default().fg(color),
+                ));
+                lines.push(Line::from(spans));
+            }
+
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                if data.priced {
+                    " list prices before discounts · trend compares with the preceding window"
+                } else {
+                    " trend compares with the preceding window"
+                },
+                Style::default().fg(p.dim),
+            )));
+            if !data.scoped {
+                lines.push(Line::from(Span::styled(
+                    " couldn't resolve this workspace's id — showing the whole account",
+                    Style::default().fg(p.warn),
+                )));
+            }
+
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                "BY MONTH",
+                Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+            )));
+            let inner_w = area.width.saturating_sub(4) as usize;
+            lines.extend(month_bars(&data.months, data.priced, inner_w, p));
 
             let par = Paragraph::new(lines).block(block);
             f.render_widget(par, area);
@@ -2889,7 +3067,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             key("esc"),
             dim(" close"),
         ]
-    } else if app.cost.is_some() {
+    } else if app.cost.is_some() || app.item_cost.is_some() {
         vec![
             dim(" "),
             key("esc"),
@@ -3160,6 +3338,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 if app.focus == Panel::Jobs {
                     spans.push(key("S"));
                     spans.push(dim(" pause   "));
+                }
+                if matches!(app.focus, Panel::Jobs | Panel::Pipelines) {
+                    spans.push(key("c"));
+                    spans.push(dim(" spend   "));
                 }
             }
         }
@@ -3714,5 +3896,100 @@ mod tests {
         assert_eq!(spark(&[0, 7]), "▁█");
         assert_eq!(spark(&[100, 150, 200]), "▁▄█");
         assert_eq!(spark(&[]), "");
+    }
+
+    /// Renders one frame at 100x30 and returns it as plain text lines.
+    fn render(app: &App) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn item_cost_app(data: fetchers::cost::ResourceCost) -> App {
+        let mut app = App::new(60, ThemeMode::Dark);
+        app.dismiss_splash();
+        app.item_cost = Some(crate::app::ItemCostView {
+            warehouse: "Starter Warehouse".to_string(),
+            kind: data.kind,
+            name: "nightly-etl".to_string(),
+            id: "42".to_string(),
+            data: Some(Ok(data)),
+        });
+        app
+    }
+
+    fn window(
+        label: &'static str,
+        days: i64,
+        dbus: f64,
+        usd: f64,
+        prior: Option<(f64, f64)>,
+    ) -> fetchers::cost::CostWindow {
+        fetchers::cost::CostWindow {
+            label,
+            days,
+            dbus,
+            usd,
+            prior,
+        }
+    }
+
+    #[test]
+    fn item_cost_view_shows_every_window_with_its_trend() {
+        let data = fetchers::cost::ResourceCost {
+            kind: fetchers::cost::ResourceKind::Job,
+            windows: vec![
+                window("last week", 7, 12.4, 9.61, Some((10.0, 8.14))),
+                window("last month", 30, 58.2, 45.1, Some((60.0, 47.0))),
+                window("last quarter", 90, 140.9, 109.22, Some((0.0, 0.0))),
+                window("last year", 365, 402.3, 311.8, None),
+            ],
+            months: vec![
+                ("2026-06".to_string(), 40.1, 31.02),
+                ("2026-07".to_string(), 58.2, 45.1),
+            ],
+            priced: true,
+            scoped: true,
+        };
+        let text = render(&item_cost_app(data)).join("\n");
+
+        assert!(
+            text.contains("Spend · nightly-etl · job · this workspace"),
+            "{text}"
+        );
+        for label in ["last week", "last month", "last quarter", "last year"] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        assert!(text.contains("$9.61"), "{text}");
+        // Rising against the prior window, falling, no prior usage, no
+        // prior window at all.
+        assert!(text.contains("▲ 18%"), "{text}");
+        assert!(text.contains("▼ 4%"), "{text}");
+        assert!(text.contains("BY MONTH"), "{text}");
+        assert!(text.contains("2026-06"), "{text}");
+    }
+
+    #[test]
+    fn item_cost_view_explains_an_unattributed_job() {
+        let data = fetchers::cost::ResourceCost {
+            kind: fetchers::cost::ResourceKind::Job,
+            windows: Vec::new(),
+            months: Vec::new(),
+            priced: true,
+            scoped: true,
+        };
+        let text = render(&item_cost_app(data)).join("\n");
+        assert!(text.contains("no usage attributed to this job"), "{text}");
+        assert!(text.contains("all-purpose compute"), "{text}");
     }
 }

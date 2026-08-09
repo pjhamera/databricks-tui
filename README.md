@@ -101,6 +101,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   bars, bucketed by SKU family (Jobs / SQL / All-Purpose / DLT), with
   list-price dollar estimates when system.billing.list_prices is readable,
   and a top-spenders table naming the jobs/clusters/warehouses behind the DBUs
+- Per-item spend (`c` on a job or pipeline): what this one thing cost over
+  the last week, month, quarter and year, each compared with the window
+  before it — so a job that quietly doubled its bill shows an amber `▲` —
+  plus a month-by-month bar chart of its year
 - Table lineage as a tree: up to 3 hops upstream and downstream from
   system.access.table_lineage, rendered with branch guides so you can
   follow a table's ancestry at a glance
@@ -223,6 +227,7 @@ them can be slow on busy workspaces.
 | `f` / `F` | Pin/unpin the selected item as a favorite (`★`) / show only favorites in the focused pane |
 | `g` | Show access: effective grants / permissions for the selected item |
 | `$` | DBU usage for the last 14 days (queries system tables on a warehouse) |
+| `c` (jobs/pipelines pane) | Spend for the selected job or pipeline over the last week, month, quarter and year, each against the window before it, plus a per-month breakdown |
 | `o` | Open selected item in the workspace web UI |
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |

@@ -226,6 +226,8 @@ impl Preview {
 enum PickTarget {
     Preview(String),
     Cost,
+    /// Spend for one job/pipeline: (kind, id, display name).
+    ItemCost(fetchers::cost::ResourceKind, String, String),
     Lineage(String),
     Sql(String),
 }
@@ -448,6 +450,16 @@ pub struct CostView {
     pub data: Option<Result<fetchers::cost::CostData, String>>,
 }
 
+/// Spend over week/month/quarter/year for a single job or pipeline.
+pub struct ItemCostView {
+    pub warehouse: String,
+    pub kind: fetchers::cost::ResourceKind,
+    /// Display name of the job/pipeline, and its id.
+    pub name: String,
+    pub id: String,
+    pub data: Option<Result<fetchers::cost::ResourceCost, String>>,
+}
+
 /// Drill-down into a single job run or pipeline update, layered over
 /// the owning detail view.
 pub struct RunView {
@@ -592,6 +604,10 @@ pub struct App {
     pub cost: Option<CostView>,
     #[allow(clippy::type_complexity)]
     cost_rx: Option<oneshot::Receiver<(Result<fetchers::cost::CostData, String>, Option<String>)>>,
+    pub item_cost: Option<ItemCostView>,
+    #[allow(clippy::type_complexity)]
+    item_cost_rx:
+        Option<oneshot::Receiver<(Result<fetchers::cost::ResourceCost, String>, Option<String>)>>,
     /// Numeric id of the current workspace, resolved lazily for cost
     /// scoping and cached for the session.
     workspace_id: Option<String>,
@@ -721,6 +737,8 @@ impl App {
             preview_warehouse: None,
             cost: None,
             cost_rx: None,
+            item_cost: None,
+            item_cost_rx: None,
             workspace_id: None,
             sql: None,
             sql_rx: None,
@@ -1038,6 +1056,8 @@ impl App {
         self.preview_warehouse = None;
         self.cost = None;
         self.cost_rx = None;
+        self.item_cost = None;
+        self.item_cost_rx = None;
         self.workspace_id = None;
         self.sql = None;
         self.sql_rx = None;
@@ -2076,6 +2096,91 @@ impl App {
         });
     }
 
+    /// Opens the spend view for the selected job or pipeline, resolving
+    /// a warehouse like the workspace-wide cost view does. A no-op in
+    /// the other panes — only jobs and pipelines are attributed in
+    /// system.billing.usage.
+    pub fn open_item_cost(&mut self, cli: &Arc<DatabricksCli>) {
+        let kind = match self.focus {
+            Panel::Jobs => fetchers::cost::ResourceKind::Job,
+            Panel::Pipelines => fetchers::cost::ResourceKind::Pipeline,
+            _ => return,
+        };
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let (Some(id), name) = (item.id.clone(), item.name.clone()) else {
+            return;
+        };
+        let warehouses = self.warehouses();
+        if warehouses.is_empty() {
+            self.flash = Some((
+                "✗ no SQL warehouse available to query system tables".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if let Some((wh_id, wh_name)) = self.preview_warehouse.clone() {
+            self.start_item_cost_query(cli, wh_id, wh_name, kind, id, name);
+            return;
+        }
+        if let [(wh_name, wh_id, _)] = warehouses.as_slice() {
+            self.preview_warehouse = Some((wh_id.clone(), wh_name.clone()));
+            let (wh_id, wh_name) = (wh_id.clone(), wh_name.clone());
+            self.start_item_cost_query(cli, wh_id, wh_name, kind, id, name);
+            return;
+        }
+        let index = warehouses
+            .iter()
+            .position(|(_, _, running)| *running)
+            .unwrap_or(0);
+        self.wh_picker = Some(WhPicker {
+            index,
+            target: PickTarget::ItemCost(kind, id, name),
+        });
+    }
+
+    fn start_item_cost_query(
+        &mut self,
+        cli: &Arc<DatabricksCli>,
+        warehouse_id: String,
+        warehouse_name: String,
+        kind: fetchers::cost::ResourceKind,
+        id: String,
+        name: String,
+    ) {
+        self.item_cost = Some(ItemCostView {
+            warehouse: warehouse_name,
+            kind,
+            name,
+            id: id.clone(),
+            data: None,
+        });
+        let (tx, rx) = oneshot::channel();
+        self.item_cost_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        let host = self.host.clone();
+        let cached_ws = self.workspace_id.clone();
+        tokio::spawn(async move {
+            // Scope usage to this workspace; resolved once, then cached.
+            let ws = match (cached_ws, host) {
+                (Some(w), _) => Some(w),
+                (None, Some(h)) => {
+                    fetchers::cost::resolve_workspace_id(&cli, &warehouse_id, &h).await
+                }
+                (None, None) => None,
+            };
+            let result =
+                fetchers::cost::fetch_resource(&cli, &warehouse_id, kind, &id, ws.as_deref()).await;
+            let _ = tx.send((result, ws));
+        });
+    }
+
+    pub fn close_item_cost(&mut self) {
+        self.item_cost = None;
+        self.item_cost_rx = None;
+    }
+
     /// Opens the lineage view for the selected table/view; needs a
     /// warehouse since lineage lives in system tables.
     pub fn open_lineage(&mut self, cli: &Arc<DatabricksCli>) {
@@ -2838,6 +2943,32 @@ impl App {
         }
     }
 
+    pub fn poll_item_cost(&mut self) -> bool {
+        let Some(rx) = &mut self.item_cost_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok((result, ws)) => {
+                if result.is_err() {
+                    self.preview_warehouse = None;
+                }
+                if ws.is_some() {
+                    self.workspace_id = ws;
+                }
+                if let Some(cv) = &mut self.item_cost {
+                    cv.data = Some(result);
+                }
+                self.item_cost_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.item_cost_rx = None;
+                true
+            }
+        }
+    }
+
     pub fn wh_picker_next(&mut self) {
         let len = self.warehouses().len();
         if let Some(p) = &mut self.wh_picker {
@@ -2876,6 +3007,9 @@ impl App {
                 self.start_preview_query(cli, table, id.clone(), name.clone())
             }
             PickTarget::Cost => self.start_cost_query(cli, id.clone(), name.clone()),
+            PickTarget::ItemCost(kind, item_id, item_name) => {
+                self.start_item_cost_query(cli, id.clone(), name.clone(), kind, item_id, item_name)
+            }
             PickTarget::Lineage(table) => self.start_lineage_query(cli, table, id.clone()),
             PickTarget::Sql(query) => self.start_sql_query(cli, query, id.clone(), name.clone()),
         }
@@ -3981,6 +4115,7 @@ impl App {
             || self.action_rx.is_some()
             || self.preview_rx.is_some()
             || self.cost_rx.is_some()
+            || self.item_cost_rx.is_some()
             || self.sql_rx.is_some()
             || self.run_rx.is_some()
     }

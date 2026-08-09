@@ -18,6 +18,7 @@ work with plain read access; the ones below have extra prerequisites.
 | Access view | `g` | Ability to read grants on the object (owners and admins always can) |
 | Volume browsing & file peek | `Enter` on a volume/file | `READ VOLUME` on the volume |
 | Cost view | `$` | `SELECT` on `system.billing.usage`; dollar estimates also need `system.billing.list_prices` |
+| Per-job/pipeline spend | `c` | Same as the cost view |
 | Cost scoping to the current workspace | automatic | `SELECT` on `system.access.workspaces_latest` |
 | Lineage | `L` | `SELECT` on `system.access.table_lineage` |
 
@@ -42,6 +43,14 @@ The app degrades gracefully when something is missing:
 - `workspaces_latest` unreadable → the cost view shows the whole
   account, clearly labeled "all workspaces" with a warning line.
 - `table_lineage` unreadable → the lineage view explains what it needs.
+
+Attribution has limits of its own: `usage` only carries a `job_id` for
+runs on job or serverless compute, so a job running on all-purpose
+compute shows no per-job spend — its DBUs belong to the shared cluster.
+Pipelines are attributed through `dlt_pipeline_id` and don't have this
+gap. Per-item spend also only reaches back 365 days, the retention of
+`system.billing.usage`, which is why the year has nothing to compare
+itself against.
 
 ## Auth
 

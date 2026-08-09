@@ -270,6 +270,9 @@ async fn run(
         if app.poll_cost() {
             needs_redraw = true;
         }
+        if app.poll_item_cost() {
+            needs_redraw = true;
+        }
         if app.poll_sql() {
             needs_redraw = true;
         }
@@ -606,6 +609,17 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.item_cost.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        (KeyCode::Esc, _) => {
+                            app.close_item_cost();
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
                 } else if app.preview.is_some() {
                     let pv_entry = app.preview.as_ref().is_some_and(|pv| pv.filter_entry);
                     let pv_record = app.preview.as_ref().is_some_and(|pv| pv.record);
@@ -869,6 +883,10 @@ async fn run(
                         }
                         (KeyCode::Char('$'), _) => {
                             app.open_cost(&cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('c'), _) => {
+                            app.open_item_cost(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Char('L'), _) => {

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Per-item spend: `c` on a job or pipeline shows what that one thing cost
+  over the last week, month, quarter and year, each against the window
+  before it (▲ amber when spend is rising, ▼ when it's falling), plus a
+  month-by-month bar chart of its year. Reads `system.billing.usage`
+  through the same warehouse and workspace scoping as `$`, attributing
+  usage via `usage_metadata.job_id` / `dlt_pipeline_id`. Jobs on
+  all-purpose compute carry no job id in `usage`, so those say so
+  instead of showing an empty chart.
+
 ## [0.29.0] - 2026-07-27
 
 ### Added
