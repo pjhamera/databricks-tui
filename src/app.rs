@@ -246,6 +246,10 @@ pub struct SqlConsole {
     pub scroll: usize,
     /// First visible result column (shift+←/→ pages wide results).
     pub col: usize,
+    /// Transposed view: one row, fields stacked vertically.
+    pub record: bool,
+    /// Field scroll within the record view.
+    pub rscroll: u16,
 }
 
 /// Tab-completion popup over the SQL prompt, backed by lazily-cached
@@ -2278,6 +2282,8 @@ impl App {
                 last_sql: String::new(),
                 scroll: 0,
                 col: 0,
+                record: false,
+                rscroll: 0,
             });
         }
     }
@@ -2658,6 +2664,19 @@ impl App {
 
     pub fn sql_scroll(&mut self, delta: i32) {
         if let Some(console) = &mut self.sql {
+            // Record view: pgup/pgdn walk the fields, not the rows.
+            if console.record {
+                let max = match &console.data {
+                    Some(Ok(t)) => t.headers.len().saturating_sub(1) as u16,
+                    _ => 0,
+                };
+                console.rscroll = if delta < 0 {
+                    console.rscroll.saturating_sub(delta.unsigned_abs() as u16)
+                } else {
+                    console.rscroll.saturating_add(delta as u16).min(max)
+                };
+                return;
+            }
             let max = match &console.data {
                 Some(Ok(t)) => t.rows.len().saturating_sub(1),
                 _ => 0,
@@ -2670,9 +2689,24 @@ impl App {
         }
     }
 
-    /// Shift+←/→ in the console: page result columns.
+    /// Shift+←/→ in the console: page result columns in the grid,
+    /// switch rows in record view. Plain ←/→ stay with the caret, since
+    /// the prompt is still live underneath.
     pub fn sql_cols(&mut self, delta: i32) {
         if let Some(console) = &mut self.sql {
+            if console.record {
+                let max = match &console.data {
+                    Some(Ok(t)) => t.rows.len().saturating_sub(1),
+                    _ => 0,
+                };
+                console.scroll = if delta < 0 {
+                    console.scroll.saturating_sub(1)
+                } else {
+                    (console.scroll + 1).min(max)
+                };
+                console.rscroll = 0;
+                return;
+            }
             let n = match &console.data {
                 Some(Ok(t)) => t.headers.len(),
                 _ => 0,
@@ -2682,6 +2716,17 @@ impl App {
             } else {
                 (console.col + 1).min(n.saturating_sub(1))
             };
+        }
+    }
+
+    /// Ctrl+V in the console: transpose the current row — one field per
+    /// line, the readable way through a wide result.
+    pub fn sql_toggle_record(&mut self) {
+        if let Some(console) = &mut self.sql {
+            if matches!(&console.data, Some(Ok(t)) if !t.rows.is_empty()) {
+                console.record = !console.record;
+                console.rscroll = 0;
+            }
         }
     }
 
@@ -2740,6 +2785,9 @@ impl App {
             console.running = true;
             console.warehouse = name;
             console.scroll = 0;
+            console.rscroll = 0;
+            // A new result set has its own shape; start it in the grid.
+            console.record = false;
             console.last_sql = query.clone();
         }
         // Published by the task once submitted, so Esc can cancel it.

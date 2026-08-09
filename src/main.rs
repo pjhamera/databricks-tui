@@ -571,6 +571,7 @@ async fn run(
                         (KeyCode::Char('e'), KeyModifiers::CONTROL) => app.sql_end(),
                         (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.sql_export(),
                         (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.hist_search_start(),
+                        (KeyCode::Char('v'), KeyModifiers::CONTROL) => app.sql_toggle_record(),
                         (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                             edit_sql_in_editor(terminal, app)?;
                         }
@@ -578,6 +579,10 @@ async fn run(
                         // when idle it closes the console.
                         (KeyCode::Esc, _) if app.sql.as_ref().is_some_and(|c| c.running) => {
                             app.sql_cancel(&cli)
+                        }
+                        // Then peels back the record view before closing.
+                        (KeyCode::Esc, _) if app.sql.as_ref().is_some_and(|c| c.record) => {
+                            app.sql_toggle_record()
                         }
                         (KeyCode::Esc, _) => app.close_sql(),
                         (KeyCode::Enter, _) => app.sql_run(&cli),

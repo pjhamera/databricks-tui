@@ -837,9 +837,13 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("↑ / ↓, ctrl+r", "history · incremental search"),
                 ("ctrl+x", "compose in $EDITOR"),
                 ("ctrl+s", "export results to CSV"),
-                ("pgup / pgdn", "scroll results"),
-                ("shift+← / →", "page result columns"),
-                ("esc", "cancel a running query, else close"),
+                ("ctrl+v", "record view: one row, fields stacked"),
+                ("pgup / pgdn", "scroll results · fields in record view"),
+                ("shift+← / →", "page result columns · rows in record view"),
+                (
+                    "esc",
+                    "cancel a running query, leave record view, else close",
+                ),
             ],
         ),
     ];
@@ -1807,6 +1811,14 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     // Wide results page horizontally; say where we are.
     let avail = parts[1].width.saturating_sub(4) as usize;
     let sliced = match &console.data {
+        Some(Ok(t)) if console.record && !t.rows.is_empty() => {
+            let row_n = console.scroll.min(t.rows.len().saturating_sub(1));
+            results_title.push(Span::styled(
+                format!("· row {}/{} (⇧←/→) ", row_n + 1, t.rows.len()),
+                Style::default().fg(p.warn).add_modifier(Modifier::BOLD),
+            ));
+            None
+        }
         Some(Ok(t)) if !t.headers.is_empty() => {
             let cols: Vec<usize> = (0..t.headers.len()).collect();
             let (shown, constraints) = grid_slice(t, &cols, console.col, avail);
@@ -1865,6 +1877,53 @@ fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 .style(Style::default().fg(p.ok))
                 .block(results_block);
             f.render_widget(par, parts[1]);
+        }
+        // Transposed: one row, fields stacked — the readable way through
+        // a result too wide to page across.
+        Some(Ok(data)) if console.record && !data.rows.is_empty() => {
+            let row_n = console.scroll.min(data.rows.len().saturating_sub(1));
+            let name_w = data
+                .headers
+                .iter()
+                .map(|h| h.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(32);
+            let empty: Vec<String> = Vec::new();
+            let row = data.rows.get(row_n).unwrap_or(&empty);
+            let lines: Vec<Line> = data
+                .headers
+                .iter()
+                .enumerate()
+                .map(|(i, header)| {
+                    let value = row.get(i).map(String::as_str).unwrap_or("");
+                    let vstyle = if value == "␀" {
+                        Style::default().fg(p.dim)
+                    } else {
+                        Style::default().fg(p.text)
+                    };
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{header:<name_w$}  "),
+                            Style::default().fg(p.warehouses),
+                        ),
+                        Span::styled(value.to_string(), vstyle),
+                    ])
+                })
+                .collect();
+            let total = lines.len();
+            let par = Paragraph::new(lines)
+                .scroll((console.rscroll, 0))
+                .block(results_block);
+            f.render_widget(par, parts[1]);
+            scrollbar(
+                f,
+                parts[1],
+                total,
+                parts[1].height.saturating_sub(2) as usize,
+                console.rscroll as usize,
+                p,
+            );
         }
         Some(Ok(data)) => {
             let (shown, constraints) = sliced.unwrap_or_default();
@@ -3099,7 +3158,14 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 dim(" cancel"),
             ]
         } else {
-            vec![
+            let record = app.sql.as_ref().is_some_and(|c| c.record);
+            // The toggle no-ops without rows, so it only earns footer
+            // room — already tight — once there's something to transpose.
+            let transposable = app
+                .sql
+                .as_ref()
+                .is_some_and(|c| matches!(&c.data, Some(Ok(t)) if !t.rows.is_empty()));
+            let mut spans = vec![
                 dim(" "),
                 key("enter"),
                 dim(" run   "),
@@ -3116,18 +3182,28 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 key("pgup"),
                 dim("/"),
                 key("pgdn"),
-                dim(" scroll   "),
+                // The same two keys walk fields once the row is transposed.
+                dim(if record { " fields   " } else { " scroll   " }),
                 key("⇧←→"),
-                dim(" cols   "),
+                dim(if record { " rows   " } else { " cols   " }),
+            ];
+            if transposable {
+                spans.push(key("^v"));
+                spans.push(dim(if record { " grid   " } else { " record   " }));
+            }
+            spans.extend([
                 key("^s"),
                 dim(" export   "),
                 key("esc"),
                 dim(if app.sql.as_ref().is_some_and(|c| c.running) {
                     " cancel query"
+                } else if record {
+                    " back to grid"
                 } else {
                     " close"
                 }),
-            ]
+            ]);
+            spans
         }
     } else if let Some(pv) = &app.preview {
         if pv.record {
@@ -3898,9 +3974,10 @@ mod tests {
         assert_eq!(spark(&[]), "");
     }
 
-    /// Renders one frame at 100x30 and returns it as plain text lines.
-    fn render(app: &App) -> Vec<String> {
-        let backend = ratatui::backend::TestBackend::new(100, 30);
+    /// Renders one frame and returns it as plain text lines. Wide enough
+    /// that assertions are about content, not the footer clipping.
+    fn render_at(app: &App, width: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, 30);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -3913,6 +3990,10 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    fn render(app: &App) -> Vec<String> {
+        render_at(app, 100)
     }
 
     fn item_cost_app(data: fetchers::cost::ResourceCost) -> App {
@@ -3977,6 +4058,62 @@ mod tests {
         assert!(text.contains("▼ 4%"), "{text}");
         assert!(text.contains("BY MONTH"), "{text}");
         assert!(text.contains("2026-06"), "{text}");
+    }
+
+    fn sql_app(record: bool) -> App {
+        let mut app = App::new(60, ThemeMode::Dark);
+        app.dismiss_splash();
+        app.sql = Some(crate::app::SqlConsole {
+            input: "SELECT * FROM main.sales.orders LIMIT 50".to_string(),
+            cursor: 0,
+            warehouse: "Starter Warehouse".to_string(),
+            running: false,
+            data: Some(Ok(TableData {
+                headers: vec![
+                    "order_id".to_string(),
+                    "customer".to_string(),
+                    "shipped_at".to_string(),
+                ],
+                rows: vec![
+                    vec!["1001".to_string(), "acme".to_string(), "␀".to_string()],
+                    vec![
+                        "1002".to_string(),
+                        "globex".to_string(),
+                        "2026-08-01".to_string(),
+                    ],
+                ],
+            })),
+            last_sql: "SELECT * FROM main.sales.orders LIMIT 50".to_string(),
+            scroll: 1,
+            col: 0,
+            record,
+            rscroll: 0,
+        });
+        app
+    }
+
+    #[test]
+    fn sql_record_view_stacks_one_row_and_marks_which() {
+        let text = render_at(&sql_app(true), 140).join("\n");
+
+        // The selected row, one field per line — not the grid header.
+        assert!(text.contains("row 2/2"), "{text}");
+        assert!(text.contains("order_id    1002"), "{text}");
+        assert!(text.contains("customer    globex"), "{text}");
+        assert!(text.contains("shipped_at  2026-08-01"), "{text}");
+        // The footer relabels the keys it shares with the grid.
+        assert!(text.contains("fields"), "{text}");
+        assert!(text.contains("^v grid"), "{text}");
+    }
+
+    #[test]
+    fn sql_grid_view_is_unchanged_and_offers_the_record_toggle() {
+        let text = render_at(&sql_app(false), 140).join("\n");
+        // Grid keeps its header row and column labels.
+        assert!(text.contains("order_id"), "{text}");
+        assert!(text.contains("customer"), "{text}");
+        assert!(!text.contains("row 2/2"), "{text}");
+        assert!(text.contains("^v record"), "{text}");
     }
 
     #[test]

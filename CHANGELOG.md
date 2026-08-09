@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Record view in the SQL console: `Ctrl+V` transposes the current result
+  row into one field per line — the readable way through a result too
+  wide to page across, matching what `v` already did in table previews.
+  `Shift+←`/`→` step through rows, `PgUp`/`PgDn` walk the fields, and
+  `Esc` peels back to the grid before closing the console. The prompt
+  stays live throughout, so plain `←`/`→` still move the caret.
+
 ## [0.30.0] - 2026-08-09
 
 ### Added
