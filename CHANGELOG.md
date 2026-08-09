@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.31.0] - 2026-08-09
 
 ### Added
 - Record view in the SQL console: `Ctrl+V` transposes the current result
