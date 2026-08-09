@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.30.0] - 2026-08-09
 
 ### Added
 - Per-item spend: `c` on a job or pipeline shows what that one thing cost
