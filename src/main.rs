@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -332,7 +332,14 @@ async fn run(
         }
 
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+            // Windows reports a Release for every Press, so an unfiltered
+            // handler runs twice per keystroke and every toggle — record
+            // view above all — flips back before it ever draws.
+            let key_press = match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => Some(key),
+                _ => None,
+            };
+            if let Some(key) = key_press {
                 if app.splash_active() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -571,7 +578,11 @@ async fn run(
                         (KeyCode::Char('e'), KeyModifiers::CONTROL) => app.sql_end(),
                         (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.sql_export(),
                         (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.hist_search_start(),
-                        (KeyCode::Char('v'), KeyModifiers::CONTROL) => app.sql_toggle_record(),
+                        // F2 does the same job as ^v, which Windows Terminal
+                        // binds to paste and never forwards to us.
+                        (KeyCode::Char('v'), KeyModifiers::CONTROL) | (KeyCode::F(2), _) => {
+                            app.sql_toggle_record()
+                        }
                         (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
                             edit_sql_in_editor(terminal, app)?;
                         }

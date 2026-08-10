@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `F2` toggles the SQL console's record view, alongside `Ctrl+V`. Windows
+  Terminal binds `Ctrl+V` to paste by default and consumes it before the
+  app sees it, which left the view unreachable there — the keystroke
+  pasted the clipboard into the prompt instead. Function keys are
+  untouched by terminal defaults, and the console prompt is live so no
+  printable character was available. The footer shows `f2` — the same two
+  columns `^v` had, in a footer with none to spare — and `?` lists both.
+
+### Fixed
+- The event loop acts on key presses only. A Windows console reports a
+  release for every press, so an unfiltered handler ran twice per
+  keystroke: letters doubled, `j` jumped two rows, and toggles like
+  record view turned on and straight back off within one keystroke.
+  Windows Terminal and WSL never sent those releases, so this only bit a
+  native binary in a bare conhost window. No-op on macOS and Linux.
+
 ## [0.31.0] - 2026-08-09
 
 ### Added

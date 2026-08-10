@@ -41,8 +41,9 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   your $EDITOR, and Ctrl+S exports results to CSV — previews export with `e`;
   Tab completes catalog, schema, table and column names straight from Unity
   Catalog (plus SQL keywords), fetched lazily and cached for the session;
-  Ctrl+V transposes the current row into a record view — one field per
-  line, like `\G` in mysql — so a 40-column result reads top to bottom
+  Ctrl+V (or F2, since Windows Terminal binds Ctrl+V to paste and never
+  forwards it) transposes the current row into a record view — one field
+  per line, like `\G` in mysql — so a 40-column result reads top to bottom
   instead of paging sideways, with Shift+←/→ stepping through rows
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit — and when a new
@@ -208,7 +209,7 @@ them can be slow on busy workspaces.
 | `/` | Filter the focused panel (matches name, detail and status; `Enter` applies, `Esc` clears) |
 | `Enter` | Open details for the selected item (drills down in Unity Catalog; in a job detail, opens the latest run) |
 | `h` / `l` (run view) | Older / newer run or pipeline update; failures show their error output |
-| `:` | SQL console: run any statement on a warehouse; `Tab` completes names from Unity Catalog, `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Shift+←`/`→` page columns, `Ctrl+V` record view, `Ctrl+S` export CSV |
+| `:` | SQL console: run any statement on a warehouse; `Tab` completes names from Unity Catalog, `↑`/`↓` history, `Ctrl+R` search, `Ctrl+X` $EDITOR, `Shift+←`/`→` page columns, `Ctrl+V`/`F2` record view, `Ctrl+S` export CSV |
 | `!` | Problems: everything failing here and in every other configured workspace; `Enter` jumps to the item, or switches workspace for remote ones |
 | `Ctrl+P` | Command palette: fuzzy-search everything loaded, `Enter` jumps to it |
 | `s` (run view) | Cancel the shown run / stop the pipeline update |

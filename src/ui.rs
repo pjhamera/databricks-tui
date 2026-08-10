@@ -837,7 +837,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("↑ / ↓, ctrl+r", "history · incremental search"),
                 ("ctrl+x", "compose in $EDITOR"),
                 ("ctrl+s", "export results to CSV"),
-                ("ctrl+v", "record view: one row, fields stacked"),
+                ("ctrl+v / f2", "record view: one row, fields stacked"),
                 ("pgup / pgdn", "scroll results · fields in record view"),
                 ("shift+← / →", "page result columns · rows in record view"),
                 (
@@ -3188,7 +3188,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 dim(if record { " rows   " } else { " cols   " }),
             ];
             if transposable {
-                spans.push(key("^v"));
+                // f2 rather than the equivalent ^v: same two columns in a
+                // footer with none to spare, and it is the one that works
+                // everywhere — a terminal binding paste to ^v eats it, and
+                // that includes WSL, where cfg!(windows) is false. `?`
+                // carries both.
+                spans.push(key("f2"));
                 spans.push(dim(if record { " grid   " } else { " record   " }));
             }
             spans.extend([
@@ -4103,7 +4108,7 @@ mod tests {
         assert!(text.contains("shipped_at  2026-08-01"), "{text}");
         // The footer relabels the keys it shares with the grid.
         assert!(text.contains("fields"), "{text}");
-        assert!(text.contains("^v grid"), "{text}");
+        assert!(text.contains("f2 grid"), "{text}");
     }
 
     #[test]
@@ -4113,7 +4118,7 @@ mod tests {
         assert!(text.contains("order_id"), "{text}");
         assert!(text.contains("customer"), "{text}");
         assert!(!text.contains("row 2/2"), "{text}");
-        assert!(text.contains("^v record"), "{text}");
+        assert!(text.contains("f2 record"), "{text}");
     }
 
     #[test]
