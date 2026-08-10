@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.32.1] - 2026-08-10
 
 ### Fixed
 - The record view had no scroll key within reach. `↑`/`↓` stayed bound to
