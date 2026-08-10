@@ -834,11 +834,12 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             &[
                 ("enter", "run the statement"),
                 ("tab", "complete catalog/schema/table/column names"),
-                ("↑ / ↓, ctrl+r", "history · incremental search"),
+                ("↑ / ↓", "history · walk fields one by one in record view"),
+                ("ctrl+r", "incremental history search"),
                 ("ctrl+x", "compose in $EDITOR"),
                 ("ctrl+s", "export results to CSV"),
                 ("ctrl+v / f2", "record view: one row, fields stacked"),
-                ("pgup / pgdn", "scroll results · fields in record view"),
+                ("pgup / pgdn", "scroll results · page fields in record view"),
                 ("shift+← / →", "page result columns · rows in record view"),
                 (
                     "esc",
@@ -3174,7 +3175,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 key("↑"),
                 dim("/"),
                 key("↓"),
-                dim(" history   "),
+                // The prompt owns these until the row is transposed, and
+                // then they are the only scroll keys a laptop without a
+                // pgdn of its own can reach without Fn.
+                dim(if record { " fields   " } else { " history   " }),
                 key("^r"),
                 dim(" search   "),
                 key("^x"),
@@ -3182,8 +3186,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 key("pgup"),
                 dim("/"),
                 key("pgdn"),
-                // The same two keys walk fields once the row is transposed.
-                dim(if record { " fields   " } else { " scroll   " }),
+                // Five at a time over the same fields ↑/↓ walk one by one.
+                dim(if record { " page   " } else { " scroll   " }),
                 key("⇧←→"),
                 dim(if record { " rows   " } else { " cols   " }),
             ];
@@ -4109,6 +4113,32 @@ mod tests {
         // The footer relabels the keys it shares with the grid.
         assert!(text.contains("fields"), "{text}");
         assert!(text.contains("f2 grid"), "{text}");
+    }
+
+    #[test]
+    fn sql_arrows_walk_fields_transposed_and_history_at_the_prompt() {
+        // Transposed, ↓ steps one field, so the stack starts a field lower.
+        let mut app = sql_app(true);
+        app.sql_vertical(1);
+        let text = render_at(&app, 140).join("\n");
+        assert!(text.contains("customer    globex"), "{text}");
+        assert!(!text.contains("order_id    1002"), "{text}");
+        assert!(text.contains("↑/↓ fields"), "{text}");
+        // One field at a time, where pgup/pgdn takes five.
+        assert!(text.contains("pgup/pgdn page"), "{text}");
+
+        // ↑ walks back up, and stops at the first field.
+        app.sql_vertical(-1);
+        app.sql_vertical(-1);
+        let text = render_at(&app, 140).join("\n");
+        assert!(text.contains("order_id    1002"), "{text}");
+
+        // At the prompt they still belong to history, results untouched.
+        let mut grid = sql_app(false);
+        grid.sql_vertical(1);
+        let text = render_at(&grid, 140).join("\n");
+        assert!(text.contains("↑/↓ history"), "{text}");
+        assert!(text.contains("order_id"), "{text}");
     }
 
     #[test]

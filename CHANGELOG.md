@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- The record view had no scroll key within reach. `↑`/`↓` stayed bound to
+  history, which no-ops unless you are already browsing it, so they did
+  nothing at all once a row was transposed — leaving `PgUp`/`PgDn`, which
+  step five fields at a time and which a Mac laptop keyboard only reaches
+  via `Fn`+`↑`/`↓`. `↑`/`↓` now walk the fields one by one while the
+  record view is up, the way `j`/`k` already did in preview's, and go
+  back to history the moment it closes. The footer follows, reading
+  `↑/↓ fields` and `pgup/pgdn page` instead of advertising history.
+
 ## [0.32.0] - 2026-08-10
 
 ### Added

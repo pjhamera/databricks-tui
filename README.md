@@ -44,7 +44,8 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   Ctrl+V (or F2, since Windows Terminal binds Ctrl+V to paste and never
   forwards it) transposes the current row into a record view — one field
   per line, like `\G` in mysql — so a 40-column result reads top to bottom
-  instead of paging sideways, with Shift+←/→ stepping through rows
+  instead of paging sideways, with ↑/↓ walking the fields, PgUp/PgDn
+  paging them five at a time, and Shift+←/→ stepping through rows
 - Problems view (`!`): everything currently failing across all panes in
   one list, with Enter jumping straight to the culprit — and when a new
   failure appears between refreshes, the footer flashes it (with a

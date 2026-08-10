@@ -2662,9 +2662,22 @@ impl App {
         }
     }
 
+    /// ↑/↓ in the console: history at the prompt, fields once the row is
+    /// transposed. Without this the record view has no scroll key within
+    /// reach — a keyboard with no PgDn of its own reaches it via Fn+↓.
+    pub fn sql_vertical(&mut self, delta: i32) {
+        if self.sql.as_ref().is_some_and(|c| c.record) {
+            self.sql_scroll(delta);
+        } else if delta < 0 {
+            self.sql_hist_prev();
+        } else {
+            self.sql_hist_next();
+        }
+    }
+
     pub fn sql_scroll(&mut self, delta: i32) {
         if let Some(console) = &mut self.sql {
-            // Record view: pgup/pgdn walk the fields, not the rows.
+            // Record view: the vertical keys walk the fields, not the rows.
             if console.record {
                 let max = match &console.data {
                     Some(Ok(t)) => t.headers.len().saturating_sub(1) as u16,
