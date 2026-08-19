@@ -381,6 +381,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     }
 
+    if app.job_health.is_some() {
+        draw_job_health(f, root[1], app, &p);
+        return;
+    }
+
     if app.preview.is_some() {
         draw_preview(f, root[1], app, &p);
         return;
@@ -777,6 +782,10 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             &[
                 ("s", "start / stop / run the selected item"),
                 ("c", "jobs/pipelines: spend over week, month, quarter, year"),
+                (
+                    "i",
+                    "jobs: deep health report — trends, task attribution, compute pressure",
+                ),
                 ("p", "jobs: on the run confirm, edit parameters first"),
                 ("S", "jobs: pause / resume the schedule or trigger"),
                 ("f", "pin / unpin the selected item as a favorite"),
@@ -1728,6 +1737,306 @@ fn draw_item_cost(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             f.render_widget(par, area);
         }
     }
+}
+
+fn humanize_bytes(bytes: i64) -> String {
+    let bytes = bytes.max(0) as u64;
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{:.1} KB", bytes as f64 / 1024.0),
+        1_048_576..=1_073_741_823 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.2} GB", bytes as f64 / 1_073_741_824.0),
+    }
+}
+
+fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let jh = app.job_health.as_ref().unwrap();
+    let title = Line::from(vec![
+        Span::styled(" ◢◤ ", Style::default().fg(p.brand)),
+        Span::styled(
+            format!("Health · {} ", jh.job_name),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "· last {}d · via {} ",
+                fetchers::job_health::WINDOW_DAYS,
+                jh.warehouse
+            ),
+            Style::default().fg(p.dim),
+        ),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.brand).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 1));
+
+    match &jh.data {
+        None => {
+            let par = Paragraph::new(format!(
+                "{} querying system.lakeflow — the warehouse may need to start…",
+                app.spinner()
+            ))
+            .style(Style::default().fg(p.warn))
+            .block(block);
+            f.render_widget(par, area);
+            return;
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!(
+                "✗ {e}\n\nsystem tables need to be enabled and readable \
+                 (grants on the `system` catalog)"
+            ))
+            .style(Style::default().fg(p.err))
+            .wrap(Wrap { trim: false })
+            .block(block);
+            f.render_widget(par, area);
+            return;
+        }
+        Some(Ok(data)) if data.days.is_empty() => {
+            let par = Paragraph::new(format!(
+                "∅ no runs in the last {} days",
+                fetchers::job_health::WINDOW_DAYS
+            ))
+            .style(Style::default().fg(p.dim))
+            .block(block);
+            f.render_widget(par, area);
+            return;
+        }
+        Some(Ok(_)) => {}
+    }
+    let Some(Ok(data)) = &jh.data else {
+        unreachable!("handled above")
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Summary: runs, success rate, duration trend.
+    let rate_color = if data.success_rate >= 95.0 {
+        p.ok
+    } else if data.success_rate >= 80.0 {
+        p.warn
+    } else {
+        p.err
+    };
+    let mut summary = vec![
+        Span::styled(
+            format!("Σ {} runs", data.total_runs),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" · {:.0}% success", data.success_rate),
+            Style::default().fg(rate_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" · {} failed   ", data.failed_runs),
+            Style::default().fg(p.dim),
+        ),
+    ];
+    let (trend, trend_color) = match data.duration_trend_pct {
+        Some(pct) if pct > 5.0 => (format!("▲ {pct:.0}% slower"), p.warn),
+        Some(pct) if pct < -5.0 => (format!("▼ {:.0}% faster", -pct), p.ok),
+        Some(_) => ("~ duration flat".to_string(), p.dim),
+        None => ("— not enough runs for a duration trend".to_string(), p.dim),
+    };
+    summary.push(Span::styled(trend, Style::default().fg(trend_color)));
+    lines.push(Line::from(summary));
+    if !data.scoped {
+        lines.push(Line::from(Span::styled(
+            " couldn't resolve this workspace's id — showing the whole account",
+            Style::default().fg(p.warn),
+        )));
+    }
+    lines.push(Line::default());
+
+    // Daily success/fail bar chart.
+    let max_day = data
+        .days
+        .iter()
+        .map(|d| d.success + d.failed + d.other)
+        .max()
+        .unwrap_or(0)
+        .max(1) as f64;
+    let inner_w = area.width.saturating_sub(4) as usize;
+    let bar_w = inner_w.saturating_sub(16).max(10);
+    for day in &data.days {
+        let mut spans = vec![Span::styled(
+            format!("{:<6}", day.date.chars().skip(5).collect::<String>()),
+            Style::default().fg(p.dim),
+        )];
+        let seg = |n: u32| -> usize {
+            ((n as f64 / max_day) * bar_w as f64)
+                .round()
+                .max(if n > 0 { 1.0 } else { 0.0 }) as usize
+        };
+        if day.success > 0 {
+            spans.push(Span::styled(
+                "█".repeat(seg(day.success)),
+                Style::default().fg(p.ok),
+            ));
+        }
+        if day.failed > 0 {
+            spans.push(Span::styled(
+                "█".repeat(seg(day.failed)),
+                Style::default().fg(p.err),
+            ));
+        }
+        if day.other > 0 {
+            spans.push(Span::styled(
+                "█".repeat(seg(day.other)),
+                Style::default().fg(p.dim),
+            ));
+        }
+        spans.push(Span::styled(
+            format!("  {}/{}", day.success, day.success + day.failed + day.other),
+            Style::default().fg(p.text),
+        ));
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::default());
+
+    // Task failure attribution.
+    lines.push(Line::from(Span::styled(
+        "TASK FAILURES",
+        Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+    )));
+    if !data.task_attribution_available {
+        lines.push(Line::from(Span::styled(
+            "○ task-level attribution unavailable — system.lakeflow.job_task_run_timeline not readable",
+            Style::default().fg(p.dim),
+        )));
+    } else if data.task_failures.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "✓ no task failures in this window",
+            Style::default().fg(p.ok),
+        )));
+    } else {
+        for t in &data.task_failures {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<24}", t.task_key), Style::default().fg(p.text)),
+                Span::styled(
+                    format!("{} / {} runs failed", t.failures, t.total),
+                    Style::default().fg(p.err),
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::default());
+
+    // Compute pressure.
+    lines.push(Line::from(Span::styled(
+        "COMPUTE",
+        Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+    )));
+    match &data.compute {
+        None => lines.push(Line::from(Span::styled(
+            "○ compute pressure unavailable — system.compute schema not enabled/readable",
+            Style::default().fg(p.dim),
+        ))),
+        Some(c) => {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  cpu busy avg {:.0}%   cpu wait avg {:.0}%   mem avg {:.0}%   mem p90 {:.0}%",
+                    c.avg_cpu_busy_pct, c.avg_cpu_wait_pct, c.avg_mem_used_pct, c.p90_mem_used_pct
+                ),
+                Style::default().fg(p.text),
+            )));
+            if let Some(family) = data.node_family {
+                let label = match family {
+                    fetchers::job_health::NodeFamily::Memory => "memory-optimized",
+                    fetchers::job_health::NodeFamily::Compute => "compute-optimized",
+                    fetchers::job_health::NodeFamily::General => "general-purpose",
+                    fetchers::job_health::NodeFamily::Unknown => "unrecognized",
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("  node family: {label} (best guess from the instance type name)"),
+                    Style::default().fg(p.dim),
+                )));
+            }
+        }
+    }
+    lines.push(Line::default());
+
+    // Heuristic flags.
+    lines.push(Line::from(Span::styled(
+        "FLAGS",
+        Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+    )));
+    if data.flags.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "✓ nothing flagged",
+            Style::default().fg(p.ok),
+        )));
+    } else {
+        for flag in &data.flags {
+            let (glyph, color) = match flag.severity {
+                fetchers::job_health::FlagSeverity::Critical => ("✗", p.err),
+                fetchers::job_health::FlagSeverity::Warn => ("▲", p.warn),
+                fetchers::job_health::FlagSeverity::Info => ("·", p.dim),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{glyph} {}", flag.message),
+                Style::default().fg(color),
+            )));
+        }
+    }
+    lines.push(Line::default());
+
+    // Live spill/skew — best-effort, only while the run's cluster is up.
+    lines.push(Line::from(Span::styled(
+        "LIVE DIAGNOSTICS",
+        Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+    )));
+    match &jh.live {
+        None => lines.push(Line::from(Span::styled(
+            format!("{} checking for a live cluster to probe…", app.spinner()),
+            Style::default().fg(p.dim),
+        ))),
+        Some(Err(e)) => lines.push(Line::from(Span::styled(
+            format!("○ live diagnostics unavailable — {e}"),
+            Style::default().fg(p.dim),
+        ))),
+        Some(Ok(live)) if live.stages.is_empty() => lines.push(Line::from(Span::styled(
+            "○ no stage data reported by the driver yet",
+            Style::default().fg(p.dim),
+        ))),
+        Some(Ok(live)) => {
+            lines.push(Line::from(Span::styled(
+                format!("  run {} · app {}", live.run_id, live.app_id),
+                Style::default().fg(p.dim),
+            )));
+            for s in &live.stages {
+                let skew_color = if s.skew_ratio >= 3.0 { p.warn } else { p.text };
+                let spill = s.memory_bytes_spilled + s.disk_bytes_spilled;
+                let spill_note = if spill > 0 {
+                    format!(
+                        "  spill {} (mem {} / disk {})",
+                        humanize_bytes(spill),
+                        humanize_bytes(s.memory_bytes_spilled),
+                        humanize_bytes(s.disk_bytes_spilled)
+                    )
+                } else {
+                    "  no spill".to_string()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  #{:<5}{:<20}", s.stage_id, s.name),
+                        Style::default().fg(p.text),
+                    ),
+                    Span::styled(
+                        format!("skew {:.1}×", s.skew_ratio),
+                        Style::default().fg(skew_color),
+                    ),
+                    Span::styled(spill_note, Style::default().fg(p.dim)),
+                ]));
+            }
+        }
+    }
+
+    let par = Paragraph::new(lines).scroll((jh.scroll, 0)).block(block);
+    f.render_widget(par, area);
 }
 
 fn draw_sql(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -3130,6 +3439,18 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     } else if app.cost.is_some() || app.item_cost.is_some() {
         vec![
             dim(" "),
+            key("esc"),
+            dim(" back   "),
+            key("q"),
+            dim(" quit"),
+        ]
+    } else if app.job_health.is_some() {
+        vec![
+            dim(" "),
+            key("j"),
+            dim("/"),
+            key("k"),
+            dim(" scroll   "),
             key("esc"),
             dim(" back   "),
             key("q"),

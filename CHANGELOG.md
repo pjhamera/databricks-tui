@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Health report: `i` on a job opens a deep per-job diagnostic view —
+  success rate, duration trend and per-task failure attribution over the
+  last 30 days from `system.lakeflow.job_run_timeline` and
+  `job_task_run_timeline`, CPU/memory pressure from
+  `system.compute.node_timeline` joined to the run's own clusters, and
+  threshold-based flags (memory pressure, over-provisioning, I/O wait,
+  node-type mismatch) built directly from that data. When the job's
+  latest run is still executing or very recently finished, a best-effort
+  probe of the driver's own Spark UI adds per-stage spill and
+  task-duration skew — it degrades to a plain unavailable message the
+  moment the cluster has terminated, without affecting the rest of the
+  report.
+
 ## [0.32.1] - 2026-08-10
 
 ### Fixed

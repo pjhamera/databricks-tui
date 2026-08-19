@@ -228,6 +228,8 @@ enum PickTarget {
     Cost,
     /// Spend for one job/pipeline: (kind, id, display name).
     ItemCost(fetchers::cost::ResourceKind, String, String),
+    /// Health report for one job: (job id, display name).
+    JobHealth(String, String),
     Lineage(String),
     Sql(String),
 }
@@ -464,6 +466,19 @@ pub struct ItemCostView {
     pub data: Option<Result<fetchers::cost::ResourceCost, String>>,
 }
 
+/// Deep per-job diagnostics: trends/attribution/compute pressure from
+/// system tables, plus a best-effort live spill/skew probe.
+pub struct JobHealthView {
+    pub warehouse: String,
+    pub job_id: String,
+    pub job_name: String,
+    pub data: Option<Result<fetchers::job_health::JobHealthData, String>>,
+    /// Live spill/skew for the current/recently-finished run; isolated
+    /// from `data` so a probe failure never affects the rest of the view.
+    pub live: Option<Result<fetchers::spark_live::SparkLiveData, String>>,
+    pub scroll: u16,
+}
+
 /// Drill-down into a single job run or pipeline update, layered over
 /// the owning detail view.
 pub struct RunView {
@@ -612,6 +627,16 @@ pub struct App {
     #[allow(clippy::type_complexity)]
     item_cost_rx:
         Option<oneshot::Receiver<(Result<fetchers::cost::ResourceCost, String>, Option<String>)>>,
+    pub job_health: Option<JobHealthView>,
+    #[allow(clippy::type_complexity)]
+    job_health_rx: Option<
+        oneshot::Receiver<(
+            Result<fetchers::job_health::JobHealthData, String>,
+            Option<String>,
+        )>,
+    >,
+    job_health_live_rx:
+        Option<oneshot::Receiver<Result<fetchers::spark_live::SparkLiveData, String>>>,
     /// Numeric id of the current workspace, resolved lazily for cost
     /// scoping and cached for the session.
     workspace_id: Option<String>,
@@ -743,6 +768,9 @@ impl App {
             cost_rx: None,
             item_cost: None,
             item_cost_rx: None,
+            job_health: None,
+            job_health_rx: None,
+            job_health_live_rx: None,
             workspace_id: None,
             sql: None,
             sql_rx: None,
@@ -1062,6 +1090,9 @@ impl App {
         self.cost_rx = None;
         self.item_cost = None;
         self.item_cost_rx = None;
+        self.job_health = None;
+        self.job_health_rx = None;
+        self.job_health_live_rx = None;
         self.workspace_id = None;
         self.sql = None;
         self.sql_rx = None;
@@ -2185,6 +2216,123 @@ impl App {
         self.item_cost_rx = None;
     }
 
+    /// Opens the deep health report for the selected job, resolving a
+    /// warehouse like the other system-table views do. A no-op outside
+    /// the Jobs pane.
+    pub fn open_job_health(&mut self, cli: &Arc<DatabricksCli>) {
+        if self.focus != Panel::Jobs {
+            return;
+        }
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        let (Some(id), name) = (item.id.clone(), item.name.clone()) else {
+            return;
+        };
+        let warehouses = self.warehouses();
+        if warehouses.is_empty() {
+            self.flash = Some((
+                "✗ no SQL warehouse available to query system tables".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if let Some((wh_id, wh_name)) = self.preview_warehouse.clone() {
+            self.start_job_health_query(cli, wh_id, wh_name, id, name);
+            return;
+        }
+        if let [(wh_name, wh_id, _)] = warehouses.as_slice() {
+            self.preview_warehouse = Some((wh_id.clone(), wh_name.clone()));
+            let (wh_id, wh_name) = (wh_id.clone(), wh_name.clone());
+            self.start_job_health_query(cli, wh_id, wh_name, id, name);
+            return;
+        }
+        let index = warehouses
+            .iter()
+            .position(|(_, _, running)| *running)
+            .unwrap_or(0);
+        self.wh_picker = Some(WhPicker {
+            index,
+            target: PickTarget::JobHealth(id, name),
+        });
+    }
+
+    fn start_job_health_query(
+        &mut self,
+        cli: &Arc<DatabricksCli>,
+        warehouse_id: String,
+        warehouse_name: String,
+        job_id: String,
+        job_name: String,
+    ) {
+        self.job_health = Some(JobHealthView {
+            warehouse: warehouse_name,
+            job_id: job_id.clone(),
+            job_name,
+            data: None,
+            live: None,
+            scroll: 0,
+        });
+
+        let (tx, rx) = oneshot::channel();
+        self.job_health_rx = Some(rx);
+        let cli1 = Arc::clone(cli);
+        let host = self.host.clone();
+        let cached_ws = self.workspace_id.clone();
+        let job_id1 = job_id.clone();
+        tokio::spawn(async move {
+            // Scope usage to this workspace; resolved once, then cached.
+            let ws = match (cached_ws, host) {
+                (Some(w), _) => Some(w),
+                (None, Some(h)) => {
+                    fetchers::cost::resolve_workspace_id(&cli1, &warehouse_id, &h).await
+                }
+                (None, None) => None,
+            };
+            let result =
+                fetchers::job_health::fetch(&cli1, &warehouse_id, &job_id1, ws.as_deref()).await;
+            let _ = tx.send((result, ws));
+        });
+
+        // Fully independent of the query above: different transport (the
+        // driver proxy, not a warehouse), and must never block or fail
+        // the system-table report if the cluster is gone or the
+        // undocumented endpoint doesn't respond.
+        let (live_tx, live_rx) = oneshot::channel();
+        self.job_health_live_rx = Some(live_rx);
+        let cli2 = Arc::clone(cli);
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                fetchers::spark_live::fetch(&cli2, &job_id),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err("live diagnostics unavailable — timed out reaching the cluster".to_string())
+            });
+            let _ = live_tx.send(result);
+        });
+    }
+
+    pub fn close_job_health(&mut self) {
+        self.job_health = None;
+        self.job_health_rx = None;
+        self.job_health_live_rx = None;
+    }
+
+    pub fn job_health_scroll(&mut self, delta: i32) {
+        if let Some(jh) = &mut self.job_health {
+            // Content length isn't known ahead of render; a generous cap
+            // just needs to stop scrolling into empty space eventually.
+            let max: u16 = 500;
+            jh.scroll = if delta < 0 {
+                jh.scroll.saturating_sub(delta.unsigned_abs() as u16)
+            } else {
+                (jh.scroll + delta as u16).min(max)
+            };
+        }
+    }
+
     /// Opens the lineage view for the selected table/view; needs a
     /// warehouse since lineage lives in system tables.
     pub fn open_lineage(&mut self, cli: &Arc<DatabricksCli>) {
@@ -3030,6 +3178,55 @@ impl App {
         }
     }
 
+    pub fn poll_job_health(&mut self) -> bool {
+        let Some(rx) = &mut self.job_health_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok((result, ws)) => {
+                if result.is_err() {
+                    self.preview_warehouse = None;
+                }
+                if ws.is_some() {
+                    self.workspace_id = ws;
+                }
+                if let Some(jh) = &mut self.job_health {
+                    jh.data = Some(result);
+                }
+                self.job_health_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.job_health_rx = None;
+                true
+            }
+        }
+    }
+
+    pub fn poll_job_health_live(&mut self) -> bool {
+        let Some(rx) = &mut self.job_health_live_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                if let Some(jh) = &mut self.job_health {
+                    jh.live = Some(result);
+                }
+                self.job_health_live_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                if let Some(jh) = &mut self.job_health {
+                    jh.live = Some(Err("live diagnostics unavailable".to_string()));
+                }
+                self.job_health_live_rx = None;
+                true
+            }
+        }
+    }
+
     pub fn wh_picker_next(&mut self) {
         let len = self.warehouses().len();
         if let Some(p) = &mut self.wh_picker {
@@ -3070,6 +3267,9 @@ impl App {
             PickTarget::Cost => self.start_cost_query(cli, id.clone(), name.clone()),
             PickTarget::ItemCost(kind, item_id, item_name) => {
                 self.start_item_cost_query(cli, id.clone(), name.clone(), kind, item_id, item_name)
+            }
+            PickTarget::JobHealth(job_id, job_name) => {
+                self.start_job_health_query(cli, id.clone(), name.clone(), job_id, job_name)
             }
             PickTarget::Lineage(table) => self.start_lineage_query(cli, table, id.clone()),
             PickTarget::Sql(query) => self.start_sql_query(cli, query, id.clone(), name.clone()),
@@ -4177,6 +4377,8 @@ impl App {
             || self.preview_rx.is_some()
             || self.cost_rx.is_some()
             || self.item_cost_rx.is_some()
+            || self.job_health_rx.is_some()
+            || self.job_health_live_rx.is_some()
             || self.sql_rx.is_some()
             || self.run_rx.is_some()
     }
