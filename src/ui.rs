@@ -1984,22 +1984,24 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     }
     lines.push(Line::default());
 
-    // Live spill/skew — best-effort, only while the run's cluster is up.
+    // Spark stage skew/spill — best-effort, from the job's most recent
+    // run; the driver-proxy path used here isn't documented to work for
+    // any particular length of time after the run finishes.
     lines.push(Line::from(Span::styled(
-        "LIVE DIAGNOSTICS",
+        "SPARK DIAGNOSTICS",
         Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
     )));
     match &jh.live {
         None => lines.push(Line::from(Span::styled(
-            format!("{} checking for a live cluster to probe…", app.spinner()),
+            format!("{} checking the most recent run's driver…", app.spinner()),
             Style::default().fg(p.dim),
         ))),
         Some(Err(e)) => lines.push(Line::from(Span::styled(
-            format!("○ live diagnostics unavailable — {e}"),
+            format!("○ Spark diagnostics unavailable — {e}"),
             Style::default().fg(p.dim),
         ))),
         Some(Ok(live)) if live.stages.is_empty() => lines.push(Line::from(Span::styled(
-            "○ no stage data reported by the driver yet",
+            "○ no stage data reported for this run",
             Style::default().fg(p.dim),
         ))),
         Some(Ok(live)) => {

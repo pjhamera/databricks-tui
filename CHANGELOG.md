@@ -9,12 +9,12 @@
   `job_task_run_timeline`, CPU/memory pressure from
   `system.compute.node_timeline` joined to the run's own clusters, and
   threshold-based flags (memory pressure, over-provisioning, I/O wait,
-  node-type mismatch) built directly from that data. When the job's
-  latest run is still executing or very recently finished, a best-effort
-  probe of the driver's own Spark UI adds per-stage spill and
-  task-duration skew — it degrades to a plain unavailable message the
-  moment the cluster has terminated, without affecting the rest of the
-  report.
+  node-type mismatch) built directly from that data. A best-effort probe
+  of the job's most recent run adds per-stage spill and task-duration
+  skew via the run's Spark UI — it isn't limited to runs still
+  executing, since the same path keeps serving results for a while
+  after the cluster terminates, but it degrades to a plain unavailable
+  message on any failure without affecting the rest of the report.
 
 ## [0.32.1] - 2026-08-10
 

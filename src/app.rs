@@ -2308,7 +2308,7 @@ impl App {
             )
             .await
             .unwrap_or_else(|_| {
-                Err("live diagnostics unavailable — timed out reaching the cluster".to_string())
+                Err("Spark diagnostics unavailable — timed out reaching the cluster".to_string())
             });
             let _ = live_tx.send(result);
         });
@@ -3219,7 +3219,7 @@ impl App {
             Err(oneshot::error::TryRecvError::Empty) => false,
             Err(oneshot::error::TryRecvError::Closed) => {
                 if let Some(jh) = &mut self.job_health {
-                    jh.live = Some(Err("live diagnostics unavailable".to_string()));
+                    jh.live = Some(Err("Spark diagnostics unavailable".to_string()));
                 }
                 self.job_health_live_rx = None;
                 true

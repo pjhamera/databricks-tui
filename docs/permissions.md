@@ -21,7 +21,7 @@ work with plain read access; the ones below have extra prerequisites.
 | Per-job/pipeline spend | `c` | Same as the cost view |
 | Cost scoping to the current workspace | automatic | `SELECT` on `system.access.workspaces_latest` |
 | Lineage | `L` | `SELECT` on `system.access.table_lineage` |
-| Job health report | `i` | `SELECT` on `system.lakeflow.job_run_timeline`; task attribution and compute pressure are optional (`job_task_run_timeline`, `system.compute.node_timeline`/`clusters`) and degrade gracefully without them. Live spill/skew needs no extra grant — it reaches the run's own driver UI with your existing workspace auth — but only works while that run's cluster is still up |
+| Job health report | `i` | `SELECT` on `system.lakeflow.job_run_timeline` and `job_task_run_timeline` (the latter also feeds compute pressure via `system.compute.node_timeline`/`clusters`); both degrade gracefully if unreadable. Spark diagnostics (skew/spill) need no extra grant — it reaches the job's most recent run with your existing workspace auth |
 
 ## About system tables
 
@@ -45,17 +45,22 @@ The app degrades gracefully when something is missing:
   account, clearly labeled "all workspaces" with a warning line.
 - `table_lineage` unreadable → the lineage view explains what it needs.
 - `job_task_run_timeline` unreadable → the health report shows run/duration
-  trends without the per-task failure breakdown.
-- `system.compute` unreadable → the health report shows run/duration trends
-  without CPU/memory pressure or the node-type heuristic.
+  trends without the per-task failure breakdown, and without CPU/memory
+  pressure or the node-type heuristic (those are also sourced from this
+  table's `compute_ids`, not the job-level table's).
+- `system.compute` unreadable → same as above: CPU/memory pressure and
+  the node-type heuristic are skipped, run/duration trends still show.
 
-Live spill/skew diagnostics in the health report use an **undocumented**
-Databricks endpoint (the driver-proxy path in front of the run's own
-Spark UI) and only work while that run's cluster is still up — typically
-the run itself, or a few minutes after it finishes before the job
-cluster auto-terminates. Serverless runs have no accessible driver UI at
-all. Either case shows a plain "unavailable" note rather than an error,
-and never affects the rest of the health report.
+Spark diagnostics (skew/spill) in the health report use an
+**undocumented** Databricks endpoint (the driver-proxy path in front of
+a run's Spark UI). It's attempted for the job's most recent run
+regardless of whether that run is still executing — the same path
+appears to keep serving cached results for some time after a job
+cluster terminates (matching what the Databricks web UI shows for
+recent runs), though exactly how long isn't documented. Serverless runs
+have no driver to reach at all. Any failure — cluster gone, no data,
+timeout — shows a plain "unavailable" note rather than an error, and
+never affects the rest of the health report.
 
 Attribution has limits of its own: `usage` only carries a `job_id` for
 runs on job or serverless compute, so a job running on all-purpose

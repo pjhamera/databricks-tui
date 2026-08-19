@@ -1,18 +1,18 @@
 use crate::cli::DatabricksCli;
-use crate::fetchers::jobs::run_status;
-use crate::shape::Status;
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// How long after a run finishes its job cluster might still be up —
-/// job clusters commonly auto-terminate ~10 minutes after the run ends.
-const LIVE_PROBE_GRACE_SECS: u64 = 600;
 
 /// Org id `0` and driver UI port `40001` are a community-documented
-/// convention for reaching a classic cluster's own Spark UI through
-/// Databricks' driver proxy — this is NOT a documented public API and
-/// may not hold on every cloud/workspace. A single attempt that fails
-/// cleanly is the intended scope here, not a fallback/scanning loop.
+/// convention for reaching a cluster's Spark UI through Databricks'
+/// driver-proxy path — this is NOT a documented public API and may not
+/// hold on every cloud/workspace. Despite the name, this same path also
+/// appears to serve cached results for runs whose cluster has already
+/// terminated (confirmed against a live workspace: the Databricks web
+/// UI keeps showing Spark UI for several previous runs, not just the
+/// current one), so this module no longer gates on the run still being
+/// "live" — it just attempts the call and lets it fail cleanly if the
+/// data is gone. Exactly how long results stay reachable isn't
+/// documented; a single attempt that fails cleanly is the intended
+/// scope, not a fallback/scanning loop.
 const DRIVER_PROXY_ORG: &str = "0";
 const DRIVER_PROXY_PORT: &str = "40001";
 
@@ -35,37 +35,6 @@ pub struct SparkLiveData {
     pub run_id: String,
     /// Most recent stages, newest first.
     pub stages: Vec<StageDiag>,
-}
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-const NO_LIVE_RUN: &str =
-    "no live/recently-finished run — live diagnostics only cover a run still up";
-
-/// Ok(()) when `run`'s cluster is plausibly still alive: the run is
-/// still executing, or finished within the auto-termination grace window.
-fn eligible(run: &Value) -> Result<(), String> {
-    let status = run_status(run);
-    if matches!(status, Status::Running | Status::Pending) {
-        return Ok(());
-    }
-    if !matches!(status, Status::Success | Status::Failed) {
-        return Err(NO_LIVE_RUN.to_string());
-    }
-    let Some(end_ms) = run["end_time"].as_u64().filter(|e| *e > 0) else {
-        return Err(NO_LIVE_RUN.to_string());
-    };
-    let age_secs = now_millis().saturating_sub(end_ms) / 1000;
-    if age_secs <= LIVE_PROBE_GRACE_SECS {
-        Ok(())
-    } else {
-        Err(NO_LIVE_RUN.to_string())
-    }
 }
 
 /// Newest run of the job, straight from the API (not shared with
@@ -93,8 +62,8 @@ fn extract_cluster_id(json: &Value) -> Option<String> {
     })
 }
 
-const NO_CLUSTER: &str = "this run has no attached cluster (serverless compute) — live \
-    diagnostics need a classic cluster's driver UI";
+const NO_CLUSTER: &str = "this run has no attached cluster (serverless compute) — \
+    Spark diagnostics need a classic cluster";
 
 async fn discover_cluster(cli: &DatabricksCli, run_id: &str) -> Result<String, String> {
     let json = cli
@@ -186,14 +155,16 @@ fn parse_stages(json: &Value) -> Vec<StageDiag> {
     out
 }
 
-/// Best-effort live spill/skew diagnostics for the job's current or very
-/// recently finished run, via the undocumented driver-proxy path in
-/// front of the run's own Spark UI. Every failure path returns a short,
-/// UI-safe `Err` — never panics — so the caller can show it as a calm
-/// "unavailable" note rather than an error.
+/// Best-effort spill/skew diagnostics for the job's most recent run, via
+/// the undocumented driver-proxy path in front of that run's Spark UI.
+/// Every failure path returns a short, UI-safe `Err` — never panics —
+/// so the caller can show it as a calm "unavailable" note rather than
+/// an error; there's no upfront eligibility check, since the same path
+/// appears to keep serving results for a while after the cluster is
+/// gone and the exact window isn't documented — the call is simply
+/// attempted and allowed to fail cleanly.
 pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, String> {
     let run = discover_run(cli, job_id).await?;
-    eligible(&run)?;
     let run_id = run["run_id"]
         .as_u64()
         .ok_or_else(|| "run has no run_id".to_string())?
@@ -212,32 +183,6 @@ pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, S
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn eligible_accepts_a_running_run() {
-        let run = json!({"state": {"life_cycle_state": "RUNNING"}});
-        assert!(eligible(&run).is_ok());
-    }
-
-    #[test]
-    fn eligible_rejects_a_finished_run_with_no_end_time() {
-        let run = json!({"state": {"result_state": "SUCCESS"}});
-        assert!(eligible(&run).is_err());
-    }
-
-    #[test]
-    fn eligible_accepts_a_run_finished_within_the_grace_window() {
-        let end_ms = now_millis() - 60_000; // finished a minute ago
-        let run = json!({"state": {"result_state": "SUCCESS"}, "end_time": end_ms});
-        assert!(eligible(&run).is_ok());
-    }
-
-    #[test]
-    fn eligible_rejects_a_run_finished_outside_the_grace_window() {
-        let end_ms = now_millis() - (LIVE_PROBE_GRACE_SECS + 60) * 1000;
-        let run = json!({"state": {"result_state": "SUCCESS"}, "end_time": end_ms});
-        assert!(eligible(&run).is_err());
-    }
 
     #[test]
     fn cluster_id_prefers_the_top_level_field() {
