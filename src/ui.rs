@@ -2004,38 +2004,71 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         ))),
         Some(Ok(live)) => {
             lines.push(Line::from(Span::styled(
-                format!("  run {} · app {}", live.run_id, live.app_id),
+                format!(
+                    "  run {} · app {} · {} stage{}",
+                    live.run_id,
+                    live.app_id,
+                    live.stages.len(),
+                    if live.stages.len() == 1 { "" } else { "s" }
+                ),
                 Style::default().fg(p.dim),
             )));
             for s in &live.stages {
-                let skew_color = if s.skew_ratio >= 3.0 { p.warn } else { p.text };
-                let spill = s.memory_bytes_spilled + s.disk_bytes_spilled;
-                let spill_note = if spill > 0 {
-                    format!(
-                        "  spill {} (mem {} / disk {})",
-                        humanize_bytes(spill),
-                        humanize_bytes(s.memory_bytes_spilled),
-                        humanize_bytes(s.disk_bytes_spilled)
+                lines.push(Line::default());
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  #{} ", s.stage_id), Style::default().fg(p.dim)),
+                    Span::styled(
+                        s.name.clone(),
+                        Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                let (skew_note, skew_color) = if s.skew_ratio > 0.0 {
+                    (
+                        format!(
+                            "      skew {:.1}× — slowest task {}ms vs median {}ms across {} tasks",
+                            s.skew_ratio,
+                            s.max_task_duration_ms,
+                            s.median_task_duration_ms,
+                            s.num_tasks
+                        ),
+                        if s.skew_ratio >= 3.0 { p.warn } else { p.dim },
                     )
                 } else {
-                    "  no spill".to_string()
+                    (
+                        format!("      {} task(s), too few to judge skew", s.num_tasks),
+                        p.dim,
+                    )
                 };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  #{:<5}{:<20}", s.stage_id, s.name),
-                        Style::default().fg(p.text),
-                    ),
-                    Span::styled(
-                        format!("skew {:.1}×", s.skew_ratio),
-                        Style::default().fg(skew_color),
-                    ),
-                    Span::styled(spill_note, Style::default().fg(p.dim)),
-                ]));
+                lines.push(Line::from(Span::styled(
+                    skew_note,
+                    Style::default().fg(skew_color),
+                )));
+                let spill = s.memory_bytes_spilled + s.disk_bytes_spilled;
+                let (spill_note, spill_color) = if spill > 0 {
+                    (
+                        format!(
+                            "      spill {} — memory {} / disk {}",
+                            humanize_bytes(spill),
+                            humanize_bytes(s.memory_bytes_spilled),
+                            humanize_bytes(s.disk_bytes_spilled)
+                        ),
+                        p.warn,
+                    )
+                } else {
+                    ("      no spill".to_string(), p.dim)
+                };
+                lines.push(Line::from(Span::styled(
+                    spill_note,
+                    Style::default().fg(spill_color),
+                )));
             }
         }
     }
 
-    let par = Paragraph::new(lines).scroll((jh.scroll, 0)).block(block);
+    let par = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((jh.scroll, 0))
+        .block(block);
     f.render_widget(par, area);
 }
 

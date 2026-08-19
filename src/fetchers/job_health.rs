@@ -92,25 +92,48 @@ fn ws_clause(workspace_id: Option<&str>) -> String {
     }
 }
 
+/// A run can be sliced across multiple rows sharing one `run_id` — runs
+/// longer than an hour get one row per hour of wall-clock time — and
+/// `result_state` is populated only on the row that closes the run, NULL
+/// on every earlier slice (and on a run still in progress). Grouping by
+/// `run_id` and taking MAX(result_state) collapses the slices back into
+/// one row per run and picks up that single non-null value; MAX ignores
+/// NULLs, so this works whether the run was sliced or not.
 fn runs_query(job_id: &str, ws: &str) -> String {
     let jc = job_clause(job_id);
     format!(
-        "SELECT CAST(datediff(current_timestamp(), period_start_time) AS INT) AS days_ago, \
-         CAST(period_start_time AS DATE) AS date, \
-         result_state, \
-         CAST(period_end_time AS LONG) - CAST(period_start_time AS LONG) AS duration_s \
-         FROM system.lakeflow.job_run_timeline \
-         WHERE period_start_time >= date_sub(current_timestamp(), {WINDOW_DAYS}){jc}{ws} \
-         ORDER BY period_start_time"
+        "WITH runs AS ( \
+           SELECT run_id, \
+                  MIN(period_start_time) AS run_start, \
+                  MAX(period_end_time) AS run_end, \
+                  MAX(result_state) AS result_state, \
+                  MAX(run_duration_seconds) AS run_duration_seconds \
+           FROM system.lakeflow.job_run_timeline \
+           WHERE period_start_time >= date_sub(current_timestamp(), {WINDOW_DAYS}){jc}{ws} \
+           GROUP BY run_id \
+         ) \
+         SELECT CAST(datediff(current_timestamp(), run_start) AS INT) AS days_ago, \
+                CAST(run_start AS DATE) AS date, \
+                COALESCE(result_state, 'RUNNING') AS result_state, \
+                COALESCE(run_duration_seconds, CAST(run_end AS LONG) - CAST(run_start AS LONG)) AS duration_s \
+         FROM runs \
+         ORDER BY run_start"
     )
 }
 
+/// Same per-row-is-a-slice-not-a-task-run caveat as `runs_query`, keyed
+/// by (run_id, task_key) instead of just run_id.
 fn task_failures_query(job_id: &str, ws: &str) -> String {
     let jc = job_clause(job_id);
     format!(
-        "SELECT task_key, result_state, COUNT(*) AS n \
-         FROM system.lakeflow.job_task_run_timeline \
-         WHERE period_start_time >= date_sub(current_timestamp(), {WINDOW_DAYS}){jc}{ws} \
+        "WITH tasks AS ( \
+           SELECT run_id, task_key, MAX(result_state) AS result_state \
+           FROM system.lakeflow.job_task_run_timeline \
+           WHERE period_start_time >= date_sub(current_timestamp(), {WINDOW_DAYS}){jc}{ws} \
+           GROUP BY run_id, task_key \
+         ) \
+         SELECT task_key, COALESCE(result_state, 'RUNNING') AS result_state, COUNT(*) AS n \
+         FROM tasks \
          GROUP BY 1, 2 ORDER BY 3 DESC"
     )
 }
