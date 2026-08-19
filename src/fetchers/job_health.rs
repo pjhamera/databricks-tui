@@ -182,10 +182,20 @@ fn node_family_query(job_id: &str, ws: &str) -> String {
     )
 }
 
+/// `system.lakeflow.*` uses its own result_state vocabulary, distinct
+/// from (and confusingly close to) the Jobs REST API's — confirmed
+/// against Databricks' documented "Result state values" for this table:
+/// SUCCEEDED, FAILED, SKIPPED, CANCELLED, TIMED_OUT, ERROR, BLOCKED, and
+/// NULL for an intermediate/still-running slice. SUCCESS is kept as a
+/// defensive fallback in case another workspace or table version uses
+/// the REST API's spelling instead.
 fn classify(result_state: &str) -> &'static str {
     match result_state.to_uppercase().as_str() {
-        "SUCCESS" => "success",
-        "FAILED" | "TIMED_OUT" | "TIMEDOUT" | "ERROR" | "INTERNAL_ERROR" => "failed",
+        "SUCCEEDED" | "SUCCESS" => "success",
+        "FAILED" | "ERROR" | "TIMED_OUT" => "failed",
+        // SKIPPED, CANCELLED, BLOCKED, RUNNING (our own NULL placeholder)
+        // aren't a pass/fail signal — excluded from the rate, not double
+        // counted as either.
         _ => "other",
     }
 }
@@ -590,6 +600,20 @@ mod tests {
         let data = aggregate_runs(&rows);
         assert_eq!(data.total_runs, 3);
         assert_eq!(data.success_rate, 100.0);
+    }
+
+    #[test]
+    fn succeeded_is_recognized_as_the_lakeflow_vocabulary_for_success() {
+        // system.lakeflow.job_run_timeline uses SUCCEEDED/ERROR, not the
+        // Jobs REST API's SUCCESS/FAILED — both must count correctly.
+        let rows = vec![
+            row(1, "2026-08-01", "SUCCEEDED", 100),
+            row(0, "2026-08-02", "ERROR", 50),
+        ];
+        let data = aggregate_runs(&rows);
+        assert_eq!(data.total_runs, 2);
+        assert_eq!(data.failed_runs, 1);
+        assert_eq!(data.success_rate, 50.0);
     }
 
     #[test]
