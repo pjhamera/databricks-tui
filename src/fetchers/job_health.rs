@@ -138,21 +138,24 @@ fn task_failures_query(job_id: &str, ws: &str) -> String {
     )
 }
 
-/// Joins the job's own clusters (via job_run_timeline.compute_ids) to
-/// their node-level utilization over the same window.
+/// Joins the job's own clusters to their node-level utilization over the
+/// same window. `compute_ids` on `job_run_timeline` is documented as
+/// populated only for `WORKFLOW_RUN` run types — an ordinary job's
+/// per-run compute lives on `job_task_run_timeline` instead, so that's
+/// what this explodes.
 fn compute_query(job_id: &str, ws: &str) -> String {
     let jc = job_clause(job_id);
     format!(
-        "WITH runs AS ( \
+        "WITH task_runs AS ( \
            SELECT period_start_time, period_end_time, explode(compute_ids) AS cluster_id \
-           FROM system.lakeflow.job_run_timeline \
+           FROM system.lakeflow.job_task_run_timeline \
            WHERE period_start_time >= date_sub(current_timestamp(), {WINDOW_DAYS}){jc}{ws} \
          ) \
          SELECT ROUND(AVG(n.cpu_user_percent + n.cpu_system_percent), 1) AS cpu_busy, \
                 ROUND(AVG(n.cpu_wait_percent), 1) AS cpu_wait, \
                 ROUND(AVG(n.mem_used_percent), 1) AS mem_avg, \
                 ROUND(percentile_approx(n.mem_used_percent, 0.9), 1) AS mem_p90 \
-         FROM runs r \
+         FROM task_runs r \
          JOIN system.compute.node_timeline n \
            ON n.cluster_id = r.cluster_id \
            AND n.start_time < r.period_end_time \
@@ -162,13 +165,14 @@ fn compute_query(job_id: &str, ws: &str) -> String {
 
 /// Current node types of the job's most recent cluster, for the
 /// node-family heuristic. `system.compute.clusters` is a slow-changing
-/// dimension, so the latest version is picked explicitly.
+/// dimension, so the latest version is picked explicitly. Same
+/// task-level `compute_ids` source as `compute_query`.
 fn node_family_query(job_id: &str, ws: &str) -> String {
     let jc = job_clause(job_id);
     format!(
         "WITH latest AS ( \
            SELECT explode(compute_ids) AS cluster_id \
-           FROM system.lakeflow.job_run_timeline \
+           FROM system.lakeflow.job_task_run_timeline \
            WHERE 1=1{jc}{ws} \
            ORDER BY period_start_time DESC LIMIT 1 \
          ) \
