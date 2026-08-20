@@ -7,6 +7,20 @@ use crate::shape::TableData;
 /// beat the Runs API's realistic ~8-20 runs, cheap enough for one query.
 pub const WINDOW_DAYS: i64 = 30;
 
+/// Whole-percent success rate, except a rate that rounds up to a clean
+/// 100% while genuinely being just short of it (e.g. 727/729 = 99.73%)
+/// gets one decimal place instead — showing "100% success" right next
+/// to a nonzero failed count reads as contradictory even though the
+/// underlying number was never wrong, just rounded past the point that
+/// mattered.
+pub fn fmt_success_rate(rate: f64) -> String {
+    if rate < 100.0 && rate.round() >= 100.0 {
+        format!("{rate:.1}%")
+    } else {
+        format!("{rate:.0}%")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DayOutcome {
     pub date: String,
@@ -644,6 +658,17 @@ mod tests {
 
     fn row(days_ago: i64, date: &str, state: &str, dur: i64) -> RunRow {
         (days_ago, date.to_string(), state.to_string(), dur)
+    }
+
+    #[test]
+    fn success_rate_formatting_never_hides_a_known_failure_behind_a_clean_100() {
+        // 727/729 = 99.726...% — rounds to a misleading "100%" at 0dp.
+        assert_eq!(fmt_success_rate(727.0 / 729.0 * 100.0), "99.7%");
+        // Genuinely 100% stays clean.
+        assert_eq!(fmt_success_rate(100.0), "100%");
+        // Ordinary values are unaffected — still whole percent.
+        assert_eq!(fmt_success_rate(87.4), "87%");
+        assert_eq!(fmt_success_rate(0.0), "0%");
     }
 
     #[test]

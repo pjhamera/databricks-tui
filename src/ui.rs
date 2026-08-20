@@ -1827,7 +1827,10 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" · {:.0}% success", data.success_rate),
+            format!(
+                " · {} success",
+                fetchers::job_health::fmt_success_rate(data.success_rate)
+            ),
             Style::default().fg(rate_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
