@@ -2295,15 +2295,21 @@ impl App {
         });
 
         // Fully independent of the query above: different transport (the
-        // driver proxy, not a warehouse), and must never block or fail
-        // the system-table report if the cluster is gone or the
-        // undocumented endpoint doesn't respond.
+        // driver proxy / delivered event log, not a warehouse), and must
+        // never block or fail the system-table report if the cluster is
+        // gone or an endpoint doesn't respond. Generous timeout: on a
+        // terminated cluster this chains several sequential `databricks`
+        // CLI calls (list runs, get run, two driver-proxy attempts, get
+        // cluster, up to three directory listings, then reading the
+        // event log file), each paying its own process/network cost —
+        // 5s was sized for the old single-endpoint probe and isn't
+        // enough for that chain.
         let (live_tx, live_rx) = oneshot::channel();
         self.job_health_live_rx = Some(live_rx);
         let cli2 = Arc::clone(cli);
         tokio::spawn(async move {
             let result = tokio::time::timeout(
-                Duration::from_secs(5),
+                Duration::from_secs(25),
                 fetchers::spark_live::fetch(&cli2, &job_id),
             )
             .await
