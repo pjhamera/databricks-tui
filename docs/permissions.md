@@ -21,7 +21,7 @@ work with plain read access; the ones below have extra prerequisites.
 | Per-job/pipeline spend | `c` | Same as the cost view |
 | Cost scoping to the current workspace | automatic | `SELECT` on `system.access.workspaces_latest` |
 | Lineage | `L` | `SELECT` on `system.access.table_lineage` |
-| Job health report | `i` | `SELECT` on `system.lakeflow.job_run_timeline` and `job_task_run_timeline` (the latter also feeds compute pressure via `system.compute.node_timeline`/`clusters`); both degrade gracefully if unreadable. Spark diagnostics (skew/spill) need no extra grant — it reaches the job's most recent run with your existing workspace auth |
+| Job health report | `i` | `SELECT` on `system.lakeflow.job_run_timeline` and `job_task_run_timeline` (the latter also feeds compute pressure via `system.compute.node_timeline`/`clusters`); both degrade gracefully if unreadable. Spark diagnostics (skew/spill) need no extra grant against the run's live driver; falling back to the delivered event log after the cluster terminates additionally needs `READ` on the cluster's `cluster_log_conf` DBFS destination |
 
 ## About system tables
 
@@ -51,16 +51,30 @@ The app degrades gracefully when something is missing:
 - `system.compute` unreadable → same as above: CPU/memory pressure and
   the node-type heuristic are skipped, run/duration trends still show.
 
-Spark diagnostics (skew/spill) in the health report use an
-**undocumented** Databricks endpoint (the driver-proxy path in front of
-a run's Spark UI). It's attempted for the job's most recent run
-regardless of whether that run is still executing — the same path
-appears to keep serving cached results for some time after a job
-cluster terminates (matching what the Databricks web UI shows for
-recent runs), though exactly how long isn't documented. Serverless runs
-have no driver to reach at all. Any failure — cluster gone, no data,
-timeout — shows a plain "unavailable" note rather than an error, and
-never affects the rest of the health report.
+Spark diagnostics (skew/spill) in the health report try two sources for
+the job's most recent run, in order:
+
+1. **The live driver**, via an **undocumented** Databricks endpoint (the
+   driver-proxy path in front of a run's Spark UI). Fast, and the
+   freshest data while the cluster is still up — but confirmed to fail
+   with a clean error the moment the cluster terminates, not to keep
+   serving cached results.
+2. **The delivered Spark event log**, read directly as a file — this is
+   Apache Spark's own documented, open event-log format, not a
+   Databricks-private one — from wherever the cluster's `cluster_log_conf`
+   points (DBFS destinations only; S3/ADLS/GCS destinations aren't
+   readable without separate cloud credentials the app doesn't have).
+   Only tried once the live driver reports the cluster as terminated.
+   Needs cluster log delivery to have been configured on the cluster (or
+   its policy) in the first place — if it wasn't, there's nothing to
+   read. If the event log has already rolled over past its most recent
+   segment (large/long-running jobs), the rolled `.gz` segments aren't
+   read.
+
+Serverless runs have no driver or delivered logs to reach at all. Any
+failure at any step — cluster gone, no delivery configured, no data,
+timeout — shows a plain "unavailable" note explaining which step failed,
+rather than an error, and never affects the rest of the health report.
 
 Attribution has limits of its own: `usage` only carries a `job_id` for
 runs on job or serverless compute, so a job running on all-purpose

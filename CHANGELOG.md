@@ -11,9 +11,10 @@
   threshold-based flags (memory pressure, over-provisioning, I/O wait,
   node-type mismatch) built directly from that data. A best-effort probe
   of the job's most recent run adds per-stage spill and task-duration
-  skew via the run's Spark UI — it isn't limited to runs still
-  executing, since the same path keeps serving results for a while
-  after the cluster terminates, but it degrades to a plain unavailable
+  skew: the live driver first (fastest, while the cluster's up), falling
+  back to reading the cluster's own delivered Spark event log once the
+  driver reports the cluster terminated (needs `cluster_log_conf`
+  configured with a DBFS destination). Degrades to a plain unavailable
   message on any failure without affecting the rest of the report.
 
 ## [0.32.1] - 2026-08-10

@@ -2005,9 +2005,13 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.dim),
         ))),
         Some(Ok(live)) => {
+            let source = match live.source {
+                fetchers::spark_live::DiagSource::Live => "live driver",
+                fetchers::spark_live::DiagSource::EventLog => "delivered event log",
+            };
             lines.push(Line::from(Span::styled(
                 format!(
-                    "  run {} · app {} · {} stage{}",
+                    "  run {} · app {} · {} stage{} · via {source}",
                     live.run_id,
                     live.app_id,
                     live.stages.len(),
