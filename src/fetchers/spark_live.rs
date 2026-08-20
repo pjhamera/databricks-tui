@@ -2,17 +2,18 @@ use crate::cli::DatabricksCli;
 use serde_json::Value;
 
 /// Org id `0` and driver UI port `40001` are a community-documented
-/// convention for reaching a cluster's Spark UI through Databricks'
+/// convention for reaching a cluster's own driver through Databricks'
 /// driver-proxy path — this is NOT a documented public API and may not
-/// hold on every cloud/workspace. Despite the name, this same path also
-/// appears to serve cached results for runs whose cluster has already
-/// terminated (confirmed against a live workspace: the Databricks web
-/// UI keeps showing Spark UI for several previous runs, not just the
-/// current one), so this module no longer gates on the run still being
-/// "live" — it just attempts the call and lets it fail cleanly if the
-/// data is gone. Exactly how long results stay reachable isn't
-/// documented; a single attempt that fails cleanly is the intended
-/// scope, not a fallback/scanning loop.
+/// hold on every cloud/workspace. Confirmed against a live workspace:
+/// this path genuinely requires the driver to be up — a terminated
+/// cluster fails with a clean `INVALID_STATE` error (see
+/// `friendly_proxy_error`), not a network timeout. There's no
+/// eligibility pre-check here regardless, since "is the driver still
+/// up" is exactly what the call itself answers — a single attempt that
+/// fails cleanly is the intended scope, not a fallback/scanning loop.
+/// The Databricks web UI can still show Spark UI for older, terminated
+/// runs; that's a separate, still-unidentified mechanism this module
+/// doesn't use.
 const DRIVER_PROXY_ORG: &str = "0";
 const DRIVER_PROXY_PORT: &str = "40001";
 
@@ -73,14 +74,31 @@ async fn discover_cluster(cli: &DatabricksCli, run_id: &str) -> Result<String, S
     extract_cluster_id(&json).ok_or_else(|| NO_CLUSTER.to_string())
 }
 
+/// Confirmed against a live workspace: once a cluster is terminated,
+/// this driver-proxy path fails with a clean `INVALID_STATE` error
+/// rather than a network/timeout failure — the endpoint genuinely
+/// requires the driver to be up, it doesn't serve cached results after
+/// termination. Recognized here so the UI can say that plainly instead
+/// of surfacing the raw CLI/API error text.
+fn friendly_proxy_error(raw: &str) -> String {
+    if raw.contains("INVALID_STATE") || raw.contains("Terminated state") {
+        "this run's cluster has already terminated — the driver is gone".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+async fn driver_proxy_get(cli: &DatabricksCli, path: &str) -> Result<Value, String> {
+    cli.run(&["api", "get", path])
+        .await
+        .map_err(|e| friendly_proxy_error(&format!("{e:#}")))
+}
+
 async fn list_apps(cli: &DatabricksCli, cluster_id: &str) -> Result<String, String> {
     let path = format!(
         "/driver-proxy-api/o/{DRIVER_PROXY_ORG}/{cluster_id}/{DRIVER_PROXY_PORT}/api/v1/applications"
     );
-    let json = cli
-        .run(&["api", "get", &path])
-        .await
-        .map_err(|e| format!("{e:#}"))?;
+    let json = driver_proxy_get(cli, &path).await?;
     json.as_array()
         .and_then(|apps| apps.first())
         .and_then(|a| a["id"].as_str())
@@ -96,10 +114,7 @@ async fn fetch_stages(
     let path = format!(
         "/driver-proxy-api/o/{DRIVER_PROXY_ORG}/{cluster_id}/{DRIVER_PROXY_PORT}/api/v1/applications/{app_id}/stages?details=true"
     );
-    let json = cli
-        .run(&["api", "get", &path])
-        .await
-        .map_err(|e| format!("{e:#}"))?;
+    let json = driver_proxy_get(cli, &path).await?;
     Ok(parse_stages(&json))
 }
 
@@ -156,13 +171,13 @@ fn parse_stages(json: &Value) -> Vec<StageDiag> {
 }
 
 /// Best-effort spill/skew diagnostics for the job's most recent run, via
-/// the undocumented driver-proxy path in front of that run's Spark UI.
+/// the undocumented driver-proxy path in front of that run's Spark UI —
+/// which requires the cluster to still be up (see `friendly_proxy_error`).
 /// Every failure path returns a short, UI-safe `Err` — never panics —
 /// so the caller can show it as a calm "unavailable" note rather than
-/// an error; there's no upfront eligibility check, since the same path
-/// appears to keep serving results for a while after the cluster is
-/// gone and the exact window isn't documented — the call is simply
-/// attempted and allowed to fail cleanly.
+/// an error. There's no separate eligibility pre-check: the call itself
+/// is the eligibility check, and is simply attempted and allowed to
+/// fail cleanly.
 pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, String> {
     let run = discover_run(cli, job_id).await?;
     let run_id = run["run_id"]
@@ -183,6 +198,23 @@ pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, S
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn friendly_proxy_error_recognizes_a_terminated_cluster() {
+        let raw = r#"databricks CLI error: Error: "INVALID_STATE": Cluster 0101-abc is in Terminated state"#;
+        assert_eq!(
+            friendly_proxy_error(raw),
+            "this run's cluster has already terminated — the driver is gone"
+        );
+    }
+
+    #[test]
+    fn friendly_proxy_error_passes_through_anything_else() {
+        assert_eq!(
+            friendly_proxy_error("connection refused"),
+            "connection refused"
+        );
+    }
 
     #[test]
     fn cluster_id_prefers_the_top_level_field() {
