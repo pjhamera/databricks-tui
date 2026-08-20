@@ -1916,9 +1916,21 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.ok),
         )));
     } else {
+        // Width from the actual longest key, not a fixed guess — a task
+        // name past a hardcoded width would otherwise run straight into
+        // the failure count with no separating space at all.
+        let name_w = data
+            .task_failures
+            .iter()
+            .map(|t| t.task_key.chars().count())
+            .max()
+            .unwrap_or(0);
         for t in &data.task_failures {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:<24}", t.task_key), Style::default().fg(p.text)),
+                Span::styled(
+                    format!("  {:<width$}", t.task_key, width = name_w + 2),
+                    Style::default().fg(p.text),
+                ),
                 Span::styled(
                     format!("{} / {} runs failed", t.failures, t.total),
                     Style::default().fg(p.err),
