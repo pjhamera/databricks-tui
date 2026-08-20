@@ -234,7 +234,12 @@ async fn probe_run(
 /// error.
 pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, String> {
     let runs = discover_runs(cli, job_id).await?;
-    let mut first_err: Option<String> = None;
+    // Kept separate rather than "first error wins": a run that had a
+    // cluster but failed to yield diagnostics for some other reason is
+    // far more informative than a later/earlier run simply having none
+    // at all, and must never be masked by it regardless of scan order.
+    let mut no_cluster_err: Option<String> = None;
+    let mut probe_err: Option<String> = None;
 
     for run in &runs {
         let Some(run_id) = run["run_id"].as_u64().map(|n| n.to_string()) else {
@@ -243,7 +248,7 @@ pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, S
         let cluster_id = match discover_cluster(cli, &run_id).await {
             Ok(id) => id,
             Err(e) => {
-                first_err.get_or_insert(format!("run {run_id}: {e}"));
+                no_cluster_err = Some(format!("run {run_id}: {e}"));
                 continue;
             }
         };
@@ -257,12 +262,12 @@ pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, S
                 })
             }
             Err(e) => {
-                first_err.get_or_insert(e);
+                probe_err.get_or_insert(e);
             }
         }
     }
 
-    Err(first_err.unwrap_or_else(|| {
+    Err(probe_err.or(no_cluster_err).unwrap_or_else(|| {
         format!("none of the last {RECENT_RUNS_TO_SCAN} runs had a cluster to probe")
     }))
 }
