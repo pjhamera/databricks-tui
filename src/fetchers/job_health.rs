@@ -1,5 +1,6 @@
 use crate::cli::DatabricksCli;
 use crate::fetchers::preview::run_sql;
+use crate::fetchers::spark_live;
 use crate::shape::TableData;
 
 /// Lookback window for the trend/attribution queries — deep enough to
@@ -532,6 +533,78 @@ fn derive_flags(data: &JobHealthData) -> Vec<HealthFlag> {
     flags
 }
 
+const SPILL_SKEW_RATIO: f64 = 3.0;
+
+/// Flags that need both the system-table compute pressure and the live/
+/// event-log stage data to say something sharper than either signal
+/// could alone. Computed at render time — not stored on `JobHealthData`
+/// — since the two fetches resolve independently of each other.
+pub fn cross_signal_flags(
+    data: &JobHealthData,
+    live: &spark_live::SparkLiveData,
+) -> Vec<HealthFlag> {
+    let mut flags = Vec::new();
+
+    if let Some(worst) = live
+        .stages
+        .iter()
+        .filter(|s| s.memory_bytes_spilled + s.disk_bytes_spilled > 0)
+        .max_by_key(|s| s.memory_bytes_spilled + s.disk_bytes_spilled)
+    {
+        let confirmed_by_pressure = data.compute.as_ref().is_some_and(|c| {
+            c.p90_mem_used_pct > MEM_P90_CRITICAL || c.avg_mem_used_pct > MEM_AVG_WARN
+        });
+        let message = if confirmed_by_pressure {
+            format!(
+                "`{}` spilled to disk in the most recent run — matches the sustained memory \
+                 pressure above; a memory-optimized node type or more workers would likely help",
+                worst.name
+            )
+        } else {
+            format!(
+                "`{}` spilled to disk in the most recent run — worth watching for memory \
+                 pressure even without a longer-term signal to confirm it",
+                worst.name
+            )
+        };
+        flags.push(HealthFlag {
+            severity: if confirmed_by_pressure {
+                FlagSeverity::Critical
+            } else {
+                FlagSeverity::Warn
+            },
+            message,
+        });
+    }
+
+    if let Some(worst) = live
+        .stages
+        .iter()
+        .filter(|s| s.skew_ratio >= SPILL_SKEW_RATIO)
+        .max_by(|a, b| {
+            a.skew_ratio
+                .partial_cmp(&b.skew_ratio)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    {
+        flags.push(HealthFlag {
+            severity: FlagSeverity::Warn,
+            message: format!(
+                "`{}` shows {:.1}x task skew (slowest task {}ms vs median {}ms) — that's a \
+                 data/partitioning issue, not something more compute fixes; look for a skewed \
+                 join or group-by key, try salting or repartitioning, or check whether adaptive \
+                 query execution's skew-join handling is on",
+                worst.name,
+                worst.skew_ratio,
+                worst.max_task_duration_ms,
+                worst.median_task_duration_ms
+            ),
+        });
+    }
+
+    flags
+}
+
 /// Deep per-job diagnostics: success-rate and duration trend over
 /// `WINDOW_DAYS`, per-task failure attribution, CPU/memory pressure from
 /// the job's own clusters, and heuristic flags built from those signals.
@@ -859,5 +932,81 @@ mod tests {
         assert!(derive_flags(&d)
             .iter()
             .any(|f| f.message.contains("start debugging there")));
+    }
+
+    fn stage(
+        name: &str,
+        skew_ratio: f64,
+        mem_spilled: i64,
+        disk_spilled: i64,
+    ) -> spark_live::StageDiag {
+        spark_live::StageDiag {
+            stage_id: 1,
+            name: name.to_string(),
+            num_tasks: 3,
+            max_task_duration_ms: 400,
+            median_task_duration_ms: 100,
+            skew_ratio,
+            memory_bytes_spilled: mem_spilled,
+            disk_bytes_spilled: disk_spilled,
+        }
+    }
+
+    fn live_data(stages: Vec<spark_live::StageDiag>) -> spark_live::SparkLiveData {
+        spark_live::SparkLiveData {
+            app_id: "app-1".to_string(),
+            run_id: "1".to_string(),
+            source: spark_live::DiagSource::Live,
+            stages,
+        }
+    }
+
+    #[test]
+    fn cross_signal_flags_confirms_spill_against_memory_pressure() {
+        let mut d = base_data();
+        d.compute = Some(ComputePressure {
+            avg_cpu_busy_pct: 50.0,
+            avg_cpu_wait_pct: 0.0,
+            avg_mem_used_pct: 50.0,
+            p90_mem_used_pct: MEM_P90_CRITICAL + 1.0,
+        });
+        let live = live_data(vec![stage("shuffle", 0.0, 1024, 0)]);
+        let flags = cross_signal_flags(&d, &live);
+        assert!(flags.iter().any(|f| f.severity == FlagSeverity::Critical
+            && f.message.contains("matches the sustained memory pressure")));
+    }
+
+    #[test]
+    fn cross_signal_flags_notes_spill_without_confirming_pressure() {
+        let d = base_data(); // compute: None
+        let live = live_data(vec![stage("shuffle", 0.0, 1024, 0)]);
+        let flags = cross_signal_flags(&d, &live);
+        assert!(flags.iter().any(|f| {
+            f.severity == FlagSeverity::Warn && f.message.contains("without a longer-term signal")
+        }));
+    }
+
+    #[test]
+    fn cross_signal_flags_ignores_stages_with_no_spill() {
+        let d = base_data();
+        let live = live_data(vec![stage("shuffle", 0.0, 0, 0)]);
+        assert!(!cross_signal_flags(&d, &live)
+            .iter()
+            .any(|f| f.message.contains("spilled")));
+    }
+
+    #[test]
+    fn cross_signal_flags_flags_skew_as_a_data_issue_not_compute() {
+        let d = base_data();
+        let live = live_data(vec![stage("join", SPILL_SKEW_RATIO, 0, 0)]);
+        let flags = cross_signal_flags(&d, &live);
+        assert!(flags
+            .iter()
+            .any(|f| f.message.contains("not something more compute fixes")));
+
+        let live_ok = live_data(vec![stage("join", SPILL_SKEW_RATIO - 0.1, 0, 0)]);
+        assert!(!cross_signal_flags(&d, &live_ok)
+            .iter()
+            .any(|f| f.message.contains("skew")));
     }
 }

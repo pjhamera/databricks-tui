@@ -15,7 +15,11 @@
   back to reading the cluster's own delivered Spark event log once the
   driver reports the cluster terminated (needs `cluster_log_conf`
   configured with a DBFS destination). Degrades to a plain unavailable
-  message on any failure without affecting the rest of the report.
+  message on any failure without affecting the rest of the report. Once
+  both signals are in, the FLAGS list cross-references them — spill that
+  matches sustained memory pressure calls out a memory-optimized node
+  type more confidently, and task skew is called out separately as a
+  data/partitioning issue rather than something more compute would fix.
 
 ## [0.32.1] - 2026-08-10
 

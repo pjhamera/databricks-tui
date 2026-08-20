@@ -1959,18 +1959,26 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     }
     lines.push(Line::default());
 
-    // Heuristic flags.
+    // Heuristic flags — plus, once Spark diagnostics have resolved,
+    // flags that need both signals together to say something sharper
+    // (e.g. confirming a memory-pressure flag against actual spill).
     lines.push(Line::from(Span::styled(
         "FLAGS",
         Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
     )));
-    if data.flags.is_empty() {
+    let cross_flags = match &jh.live {
+        Some(Ok(live)) => fetchers::job_health::cross_signal_flags(data, live),
+        _ => Vec::new(),
+    };
+    let all_flags: Vec<&fetchers::job_health::HealthFlag> =
+        data.flags.iter().chain(cross_flags.iter()).collect();
+    if all_flags.is_empty() {
         lines.push(Line::from(Span::styled(
             "✓ nothing flagged",
             Style::default().fg(p.ok),
         )));
     } else {
-        for flag in &data.flags {
+        for flag in all_flags {
             let (glyph, color) = match flag.severity {
                 fetchers::job_health::FlagSeverity::Critical => ("✗", p.err),
                 fetchers::job_health::FlagSeverity::Warn => ("▲", p.warn),
