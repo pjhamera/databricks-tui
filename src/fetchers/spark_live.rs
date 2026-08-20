@@ -69,10 +69,12 @@ fn skew_ratio_of(mut durations: Vec<i64>) -> (i64, i64, f64) {
 /// for reasons that have nothing to do with what this feature cares
 /// about (skipped by a concurrency policy, a condition that wasn't met,
 /// disabled, etc.), and the newest run is exactly the one most likely to
-/// be one of those. Small and cheap: each candidate that turns out to
-/// have no cluster fails fast (one `get-run` call, no driver/event-log
-/// attempt), so scanning past a few skipped runs costs little.
-const RECENT_RUNS_TO_SCAN: usize = 5;
+/// be one of those. Confirmed against a live workspace that 5 wasn't
+/// always enough (a job can have a longer streak of skipped/canceled
+/// runs in a row than that). Cheap regardless of depth: each candidate
+/// that turns out to have no cluster fails fast (one `get-run` call, no
+/// driver/event-log attempt), so scanning further back costs little.
+const RECENT_RUNS_TO_SCAN: usize = 25;
 
 /// Recent runs of the job, newest first, straight from the API (not
 /// shared with `RunView`'s state, keeping this module fully decoupled).
