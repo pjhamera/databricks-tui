@@ -65,16 +65,30 @@ fn skew_ratio_of(mut durations: Vec<i64>) -> (i64, i64, f64) {
     (max, median, skew)
 }
 
-/// Newest run of the job, straight from the API (not shared with
-/// `RunView`'s state, keeping this module fully decoupled).
-async fn discover_run(cli: &DatabricksCli, job_id: &str) -> Result<Value, String> {
-    let args = ["jobs", "list-runs", "--job-id", job_id, "--limit", "1"];
+/// How many recent runs to consider — a run can have no cluster to probe
+/// for reasons that have nothing to do with what this feature cares
+/// about (skipped by a concurrency policy, a condition that wasn't met,
+/// disabled, etc.), and the newest run is exactly the one most likely to
+/// be one of those. Small and cheap: each candidate that turns out to
+/// have no cluster fails fast (one `get-run` call, no driver/event-log
+/// attempt), so scanning past a few skipped runs costs little.
+const RECENT_RUNS_TO_SCAN: usize = 5;
+
+/// Recent runs of the job, newest first, straight from the API (not
+/// shared with `RunView`'s state, keeping this module fully decoupled).
+async fn discover_runs(cli: &DatabricksCli, job_id: &str) -> Result<Vec<Value>, String> {
+    let limit = RECENT_RUNS_TO_SCAN.to_string();
+    let args = ["jobs", "list-runs", "--job-id", job_id, "--limit", &limit];
     let json = cli.run(&args).await.map_err(|e| format!("{e:#}"))?;
-    json.as_array()
+    let runs = json
+        .as_array()
         .cloned()
         .or_else(|| json["runs"].as_array().cloned())
-        .and_then(|runs| runs.into_iter().next())
-        .ok_or_else(|| "no runs found for this job".to_string())
+        .unwrap_or_default();
+    if runs.is_empty() {
+        return Err("no runs found for this job".to_string());
+    }
+    Ok(runs)
 }
 
 /// The cluster a `jobs get-run` response ran on: top-level first, else
@@ -185,42 +199,70 @@ fn parse_stages(json: &Value) -> Vec<StageDiag> {
     out
 }
 
-/// Best-effort spill/skew diagnostics for the job's most recent run:
-/// tries the live driver first (fast, and the freshest possible data
-/// while the cluster is up), and — only when that fails specifically
-/// because the cluster has terminated — falls back to reading the Spark
-/// event log Databricks delivered for that cluster, if cluster log
-/// delivery is configured. Every failure path returns a short, UI-safe
-/// `Err` — never panics — so the caller can show it as a calm
-/// "unavailable" note rather than an error.
-pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, String> {
-    let run = discover_run(cli, job_id).await?;
-    let run_id = run["run_id"]
-        .as_u64()
-        .ok_or_else(|| "run has no run_id".to_string())?
-        .to_string();
-    let cluster_id = discover_cluster(cli, &run_id).await?;
-
-    match probe_driver(cli, &cluster_id).await {
-        Ok((app_id, stages)) => Ok(SparkLiveData {
-            app_id,
-            run_id,
-            source: DiagSource::Live,
-            stages,
-        }),
+/// Probes one run's cluster: the live driver first (fast, and the
+/// freshest possible data while the cluster is up), and — only when
+/// that fails specifically because the cluster has terminated — falls
+/// back to reading the Spark event log Databricks delivered for it, if
+/// cluster log delivery is configured.
+async fn probe_run(
+    cli: &DatabricksCli,
+    run_id: &str,
+    cluster_id: &str,
+) -> Result<(String, DiagSource, Vec<StageDiag>), String> {
+    match probe_driver(cli, cluster_id).await {
+        Ok((app_id, stages)) => Ok((app_id, DiagSource::Live, stages)),
         Err(live_err) if live_err.contains("already terminated") => {
-            match probe_event_log(cli, &cluster_id).await {
-                Ok((app_id, stages)) => Ok(SparkLiveData {
-                    app_id,
-                    run_id,
-                    source: DiagSource::EventLog,
-                    stages,
-                }),
-                Err(log_err) => Err(format!("{live_err}, and {log_err}")),
+            match probe_event_log(cli, cluster_id).await {
+                Ok((app_id, stages)) => Ok((app_id, DiagSource::EventLog, stages)),
+                Err(log_err) => Err(format!("run {run_id}: {live_err}, and {log_err}")),
             }
         }
-        Err(live_err) => Err(live_err),
+        Err(live_err) => Err(format!("run {run_id}: {live_err}")),
     }
+}
+
+/// Best-effort spill/skew diagnostics for the job's most recent run that
+/// actually has a cluster to probe. Scans back through a few recent runs
+/// (see `RECENT_RUNS_TO_SCAN`) since the single newest one is often
+/// exactly the kind with nothing to show — skipped, disabled, a
+/// condition that wasn't met — and uses the first one, newest first,
+/// that either has live driver data or a readable delivered event log.
+/// Every failure path returns a short, UI-safe `Err` — never panics — so
+/// the caller can show it as a calm "unavailable" note rather than an
+/// error.
+pub async fn fetch(cli: &DatabricksCli, job_id: &str) -> Result<SparkLiveData, String> {
+    let runs = discover_runs(cli, job_id).await?;
+    let mut first_err: Option<String> = None;
+
+    for run in &runs {
+        let Some(run_id) = run["run_id"].as_u64().map(|n| n.to_string()) else {
+            continue;
+        };
+        let cluster_id = match discover_cluster(cli, &run_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                first_err.get_or_insert(format!("run {run_id}: {e}"));
+                continue;
+            }
+        };
+        match probe_run(cli, &run_id, &cluster_id).await {
+            Ok((app_id, source, stages)) => {
+                return Ok(SparkLiveData {
+                    app_id,
+                    run_id,
+                    source,
+                    stages,
+                })
+            }
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+
+    Err(first_err.unwrap_or_else(|| {
+        format!("none of the last {RECENT_RUNS_TO_SCAN} runs had a cluster to probe")
+    }))
 }
 
 async fn probe_driver(
