@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.33.0] - 2026-08-23
 
 ### Added
 - Health report: `i` on a job opens a deep per-job diagnostic view —
@@ -19,11 +19,11 @@
   the kind with nothing to probe — skipped, disabled, a condition that
   wasn't met — and uses the first one that actually has a cluster.
   Degrades to a plain unavailable message on any failure without
-  affecting the rest of the report. Once
-  both signals are in, the FLAGS list cross-references them — spill that
-  matches sustained memory pressure calls out a memory-optimized node
-  type more confidently, and task skew is called out separately as a
-  data/partitioning issue rather than something more compute would fix.
+  affecting the rest of the report. Once both signals are in, the FLAGS
+  list cross-references them — spill that matches sustained memory
+  pressure calls out a memory-optimized node type more confidently, and
+  task skew is called out separately as a data/partitioning issue rather
+  than something more compute would fix.
 
 ## [0.32.1] - 2026-08-10
 
