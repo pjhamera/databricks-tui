@@ -130,10 +130,14 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
 - Zoom into any pane, non-blocking refresh — the UI never freezes;
   scrollbars mark your place in long output, and unfocused panes dim
   slightly so the active one is obvious at a glance
-- Sixteen color themes: terminal-default dark, light, the full Catppuccin
-  family (Mocha, Macchiato, Frappé, Latte), Gruvbox Dark & Light, Dracula,
-  Nord, Tokyo Night, Rosé Pine, Everforest, Kanagawa, Solarized Dark and
-  One Dark — `t` cycles, `--theme` picks at launch, and the app remembers
+- 142 color themes: the sixteen built-ins — terminal-default dark, light,
+  the full Catppuccin family (Mocha, Macchiato, Frappé, Latte), Gruvbox
+  Dark & Light, Dracula, Nord, Tokyo Night, Rosé Pine, Everforest,
+  Kanagawa, Solarized Dark and One Dark — plus all 63 US National Parks in
+  dark and light, from
+  [national-parks-themes](https://github.com/pjhamera/national-parks-themes).
+  `t` opens a search overlay (try a park, a state, or "granite"), `--theme`
+  picks at launch, `--list-themes` prints every id, and the app remembers
   your theme and warehouse choice per profile
   across sessions (~/.config/databricks-tui/config.json)
 - Built-in self-upgrade from GitHub releases
@@ -189,12 +193,17 @@ app keeps are under `~/.config/databricks-tui/` (SQL history, preferences).
 databricks-tui                      # default profile, 30s refresh
 databricks-tui --profile prod       # named CLI profile
 databricks-tui --refresh 10         # refresh every 10 seconds
-databricks-tui --theme light        # or catppuccin-mocha, catppuccin-macchiato,
-                                    # catppuccin-frappe, catppuccin-latte, gruvbox,
-                                    # gruvbox-light, dracula, nord, tokyo-night,
-                                    # rose-pine, everforest, kanagawa,
-                                    # solarized-dark, one-dark
+databricks-tui --theme parks-zion   # any of 142 theme ids
+databricks-tui --list-themes        # print them all, grouped
 ```
+
+Light themes — `light`, `catppuccin-latte`, `gruvbox-light` and the 63
+`parks-*-light` variants — assume a light terminal background. The app
+never paints its own background, so it inherits whatever your terminal
+uses: pick a light theme when your terminal is light, a dark one when it
+isn't. The parks repo also ships matching schemes for ghostty, kitty,
+alacritty, wezterm, iTerm2 and Windows Terminal, so `parks-zion-light` in
+your terminal and `--theme parks-zion-light` here is one coherent look.
 
 The Clusters pane shows interactive (UI/API-created) clusters only —
 job-created clusters are excluded, both for signal and because listing
@@ -237,7 +246,7 @@ them can be slow on busy workspaces.
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |
 | `Esc` | Close details / exit zoom |
-| `t` | Cycle color themes (dark, light, Catppuccin, Gruvbox, Dracula, Nord, Tokyo Night, Rosé Pine, Everforest, Kanagawa, Solarized, One Dark) |
+| `t` | Search color themes: type to filter all 142 by name, park, state or id — `↑`/`↓` preview live, `Enter` keeps, `Esc` puts back what you had |
 | `H` | Arrange panes: `space` shows/hides, `J`/`K` reorders — layout adapts and persists |
 | `?` | Help: all keybindings grouped by context |
 | `r` | Force refresh |

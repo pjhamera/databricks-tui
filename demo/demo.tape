@@ -96,13 +96,17 @@ Sleep 4.5s
 Escape
 Sleep 900ms
 
-# --- Eight built-in themes ---
+# --- 142 themes: the classics plus all 63 National Parks, searchable ---
 Type "t"
+Sleep 1.5s
+Type "yos"
+Sleep 1.5s
+Down
 Sleep 1.3s
-Type "t"
-Sleep 1.3s
-Type "t"
-Sleep 1.8s
+Up
+Sleep 1s
+Enter
+Sleep 2s
 
 Type "q"
 Sleep 500ms

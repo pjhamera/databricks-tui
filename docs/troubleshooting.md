@@ -55,6 +55,18 @@ The pane icons are plain Unicode (no Nerd Font needed), but a very old
 terminal font may lack them. Any modern monospace font works; the app
 avoids emoji-width characters so alignment never breaks.
 
+## The theme I picked isn't the one I get
+
+`--theme` and the `theme` key in `config.json` both take an id, not a
+display name — `--list-themes` prints all 142, grouped. An unknown id on
+the command line exits with an error naming that flag; an unknown one in
+`config.json` falls back to `dark` and flashes a warning at startup
+(before, it fell back silently).
+
+Light themes assume a light terminal background. The app never paints its
+own background, so a `*-light` theme in a dark terminal will look washed
+out — that is the terminal showing through, not the theme being broken.
+
 ## Where the app keeps files
 
 Only `~/.config/databricks-tui/`: `history` (SQL console statements)

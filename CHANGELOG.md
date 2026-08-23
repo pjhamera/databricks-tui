@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- All 63 US National Parks as color themes, in dark and light, taking the
+  total from 16 to 142. They come from
+  [national-parks-themes](https://github.com/pjhamera/national-parks-themes)
+  via `scripts/gen_parks_themes.py`, which ports that project's OKLCH math
+  and then checks its own output against the terminal schemes the project
+  publishes — 1386 values across all 126 variants, so these are upstream's
+  palettes rather than an approximation of them. No new runtime
+  dependencies: the colours are committed as `src/theme/parks.rs`.
+- `--list-themes` prints every theme id, grouped by origin and background,
+  so `--help` no longer has to enumerate them.
+
+### Changed
+- `t` opens a searchable theme picker instead of stepping to the next
+  theme — cycling was never going to be a way through 142 palettes. Type
+  to filter by name, id, park, state or description ("california" and
+  "granite" both find Yosemite); `↑`/`↓` preview live so you see a theme
+  before choosing it, `Enter` keeps it, `Esc` puts back what you had.
+- An unknown `theme` id in `config.json` flashes a warning at startup
+  instead of silently falling back to dark, and an unknown `--theme` value
+  now exits pointing at `--list-themes`.
+- Themes are held in a data table rather than five parallel lists and a
+  280-line match. Every existing theme id is unchanged, including the
+  `gruvbox` / `gruvbox-light` spelling, so saved preferences keep working.
+
 ## [0.33.0] - 2026-08-23
 
 ### Added
