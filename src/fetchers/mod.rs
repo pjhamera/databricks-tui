@@ -4,6 +4,7 @@ pub mod cost;
 pub mod current_user;
 pub mod dashboards;
 pub mod detail;
+pub mod doctor;
 pub mod grants;
 pub mod job_health;
 pub mod jobs;
