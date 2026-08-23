@@ -36,7 +36,7 @@ use crate::cli::DatabricksCli;
 use crate::config;
 use crate::fetchers::job_health::{FlagSeverity, JobHealthData, NodeFamily};
 use crate::fetchers::preview::run_sql;
-use crate::fetchers::{runs, spark_live};
+use crate::fetchers::{jobs, runs, spark_live};
 use crate::shape::Status;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -274,13 +274,26 @@ pub fn gate(
     let failure_output = failure_output.filter(|s| !s.trim().is_empty());
 
     if !has_actionable_flag(data) && failure_output.is_none() && !has_stage_signal(live) {
-        return Gate::Skip(format!(
-            "nothing to diagnose — {} of {} runs succeeded over {} days and no flag rose above \
-             info",
-            data.total_runs - data.failed_runs,
-            data.total_runs,
-            data.window_days
-        ));
+        // A job can have failures that breached no threshold and whose
+        // error output is no longer retrievable — an old failure that
+        // the run history has scrolled past. Saying "nothing to
+        // diagnose" next to a health view showing a red bar reads as a
+        // bug even when the refusal is correct, so the two cases get
+        // different sentences.
+        return Gate::Skip(if data.failed_runs > 0 {
+            format!(
+                "{} of {} runs failed over {} days, but no threshold was breached and their \
+                 error output is no longer retrievable — there's nothing to read beyond the \
+                 numbers above",
+                data.failed_runs, data.total_runs, data.window_days
+            )
+        } else {
+            format!(
+                "nothing to diagnose — all {} runs over {} days succeeded and no flag rose above \
+                 info",
+                data.total_runs, data.window_days
+            )
+        });
     }
 
     // A statistical complaint off three runs is a coin flip dressed up as
@@ -585,14 +598,38 @@ pub async fn prescribe(
     Ok(verdict)
 }
 
+/// How far back to look for a failed run. Deliberately not `runs::list`,
+/// whose limit of 20 is tuned for the run drill-down's visible list: a
+/// job that fails once a month puts its failure well outside that
+/// window, and missing it made the gate skip a job whose health view was
+/// plainly showing a failure — the numbers said something was wrong and
+/// the doctor said there was nothing to diagnose. The health report's
+/// own window is 30 days, so the scan has to reach at least that far.
+const FAILURE_SCAN_LIMIT: &str = "50";
+
 /// Error text of the most recent failed run, for the digest. Two CLI
 /// calls and no warehouse time, so this is cheap enough to fetch before
 /// gating — which matters, because its presence is what decides whether
-/// a thin-sample job is worth diagnosing at all.
+/// a job is worth diagnosing at all.
 pub async fn latest_failure_output(cli: &DatabricksCli, job_id: &str) -> Option<String> {
-    let runs = runs::list(cli, job_id).await.ok()?;
-    let (run_id, _, _) = runs.iter().find(|(_, s, _)| *s == Status::Failed)?;
-    let (output, _) = runs::full_output(cli, run_id).await;
+    let json = cli
+        .run(&[
+            "jobs",
+            "list-runs",
+            "--job-id",
+            job_id,
+            "--limit",
+            FAILURE_SCAN_LIMIT,
+        ])
+        .await
+        .ok()?;
+    let run_id = json
+        .as_array()?
+        .iter()
+        .find(|r| jobs::run_status(r) == Status::Failed)
+        .and_then(|r| r["run_id"].as_u64())?
+        .to_string();
+    let (output, _) = runs::full_output(cli, &run_id).await;
     Some(output).filter(|o| !o.trim().is_empty())
 }
 
@@ -755,6 +792,17 @@ mod tests {
         assert!(matches!(gate, Gate::Skip(_)));
     }
 
+    /// 34 of 35 runs succeeded, so no threshold fired — but one run
+    /// genuinely failed, and the health view says so. This is the shape
+    /// that made the doctor look broken.
+    fn one_old_failure() -> JobHealthData {
+        let mut data = healthy();
+        data.total_runs = 35;
+        data.failed_runs = 1;
+        data.success_rate = 97.1;
+        data
+    }
+
     #[test]
     fn a_healthy_job_costs_nothing() {
         let gate = gate(ENDPOINT, "etl", &healthy(), None, None);
@@ -790,6 +838,42 @@ mod tests {
     fn blank_failure_text_does_not_count_as_evidence() {
         let gate = gate(ENDPOINT, "etl", &healthy(), None, Some("   \n  "));
         assert!(matches!(gate, Gate::Skip(_)));
+    }
+
+    /// The refusal is right — with no error text there is nothing to add
+    /// beyond the numbers already on screen — but it must not claim the
+    /// job is clean while the view above it shows a failure.
+    #[test]
+    fn an_unreadable_failure_is_not_reported_as_a_clean_bill_of_health() {
+        let gate = gate(ENDPOINT, "etl", &one_old_failure(), None, None);
+        let Gate::Skip(msg) = gate else {
+            panic!("no error text and no flag — should not ask");
+        };
+        assert!(msg.contains("1 of 35 runs failed"), "{msg}");
+        assert!(
+            !msg.contains("nothing to diagnose"),
+            "a job with a failure must not be described as having nothing wrong: {msg}"
+        );
+    }
+
+    /// The same job once the deeper run scan actually reaches the
+    /// failure — this is the case the doctor exists for.
+    #[test]
+    fn a_readable_failure_is_worth_a_call_even_at_97_percent_success() {
+        let gate = gate(
+            ENDPOINT,
+            "etl",
+            &one_old_failure(),
+            None,
+            Some("java.lang.OutOfMemoryError: Java heap space"),
+        );
+        assert!(matches!(gate, Gate::Ask(_)));
+    }
+
+    #[test]
+    fn a_job_that_never_failed_still_says_nothing_to_diagnose() {
+        let gate = gate(ENDPOINT, "etl", &healthy(), None, None);
+        assert!(matches!(gate, Gate::Skip(msg) if msg.contains("nothing to diagnose")));
     }
 
     #[test]
