@@ -485,6 +485,24 @@ def emit(variants: list[Variant], rev: str) -> str:
     return "\n".join(out)
 
 
+def rustfmt(text: str) -> str:
+    """Format through rustfmt so `cargo fmt` never rewrites what we emit --
+    otherwise --check reports drift after every unrelated `cargo fmt`."""
+    try:
+        done = subprocess.run(
+            ["rustfmt", "--edition", "2021", "--emit", "stdout"],
+            input=text, capture_output=True, text=True, check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        print(f"warning: rustfmt unavailable ({e}); emitting unformatted", file=sys.stderr)
+        return text
+    # rustfmt --emit stdout prefixes a filename banner when reading stdin.
+    out = done.stdout
+    if out.startswith("<stdin>:\n"):
+        out = out[len("<stdin>:\n"):]
+    return out
+
+
 def escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -591,7 +609,7 @@ def main() -> int:
     ).stdout.strip()
 
     variants = build_all(repo)
-    text = emit(variants, rev)
+    text = rustfmt(emit(variants, rev))
 
     if args.check:
         current = args.out.read_text() if args.out.exists() else ""

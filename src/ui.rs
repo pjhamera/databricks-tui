@@ -133,6 +133,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.jump.is_some() {
             draw_jump(f, root[1], app, p);
         }
+        if app.theme_picker.is_some() {
+            draw_theme_picker(f, root[1], app, p);
+        }
         if app.pane_cfg.is_some() {
             draw_pane_cfg(f, root[1], app, p);
         }
@@ -233,6 +236,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.jump.is_some() {
         draw_jump(f, root[1], app, p);
+    }
+    if app.theme_picker.is_some() {
+        draw_theme_picker(f, root[1], app, p);
     }
     if app.pane_cfg.is_some() {
         draw_pane_cfg(f, root[1], app, p);
@@ -466,7 +472,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("H", "arrange panes: hide and reorder"),
                 ("z", "zoom the focused pane"),
                 ("w", "switch workspace profile"),
-                ("t", "cycle color theme"),
+                ("t", "search color themes"),
                 ("r", "refresh now"),
                 ("?", "this help"),
                 ("q / ctrl+c", "quit"),
@@ -886,6 +892,83 @@ fn draw_upcoming(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default().with_selected(Some(u.index));
     f.render_stateful_widget(list, popup, &mut state);
+}
+
+/// `t` overlay. Same shape as `draw_jump`, plus the current-theme marker from
+/// `draw_picker` and a swatch built from each row's own palette — with 142
+/// themes the name alone says very little, and the highlighted row is already
+/// painting the rest of the screen.
+fn draw_theme_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    let Some(picker) = &app.theme_picker else {
+        return;
+    };
+    let matches = app.theme_matches();
+    let width = 60.min(area.width.saturating_sub(4));
+    // The list scrolls rather than growing: ListState keeps the selection visible.
+    let rows = (matches.len() as u16).clamp(1, 12);
+    let height = (rows + 5).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + 2.min(area.height.saturating_sub(height)),
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" ⌕ ", Style::default().fg(p.key)),
+            Span::styled(
+                "Theme ",
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{} ", matches.len()), Style::default().fg(p.dim)),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(p.key).add_modifier(Modifier::BOLD))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("❯ ", Style::default().fg(p.key)),
+            Span::styled(picker.query.as_str(), Style::default().fg(p.text)),
+            Span::styled("▏", Style::default().fg(p.warn)),
+        ])),
+        parts[0],
+    );
+
+    if matches.is_empty() {
+        f.render_widget(
+            Paragraph::new("∅ nothing matches").style(Style::default().fg(p.dim)),
+            parts[1],
+        );
+        return;
+    }
+    let items: Vec<ListItem> = matches
+        .iter()
+        .map(|t| {
+            let current = t.id == app.theme.id();
+            let sw = |c: Color| Span::styled("█", Style::default().fg(c));
+            ListItem::new(Line::from(vec![
+                Span::styled(if current { "● " } else { "  " }, Style::default().fg(p.ok)),
+                sw(t.palette.brand),
+                sw(t.palette.ok),
+                sw(t.palette.warn),
+                sw(t.palette.err),
+                Span::styled(format!("  {}", t.name), Style::default().fg(p.text)),
+                Span::styled(format!("  {}", t.id), Style::default().fg(p.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(picker.index));
+    f.render_stateful_widget(list, parts[1], &mut state);
 }
 
 fn draw_wh_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
@@ -4082,6 +4165,55 @@ mod tests {
 
     fn render(app: &App) -> Vec<String> {
         render_at(app, 100)
+    }
+
+    fn theme_picker_app(query: &str) -> App {
+        let mut app = App::new(60, ThemeMode::default());
+        app.dismiss_splash();
+        app.open_theme_picker();
+        for c in query.chars() {
+            app.theme_push(c);
+        }
+        app
+    }
+
+    #[test]
+    fn theme_picker_draws_the_prompt_and_a_match_count() {
+        let app = theme_picker_app("");
+        let out = render(&app).join("\n");
+        assert!(out.contains("Theme"), "overlay title missing:\n{out}");
+        assert!(out.contains("142"), "match count missing:\n{out}");
+        assert!(out.contains("❯"), "query prompt missing:\n{out}");
+        // Opens on the current theme, which is marked.
+        assert!(out.contains("● "), "current-theme marker missing:\n{out}");
+    }
+
+    #[test]
+    fn theme_picker_draws_only_the_matching_rows() {
+        let out = render(&theme_picker_app("yos")).join("\n");
+        assert!(out.contains("Yosemite"), "expected Yosemite:\n{out}");
+        assert!(out.contains("parks-yosemite-light"));
+        assert!(
+            !out.contains("Dracula"),
+            "non-matching row still drawn:\n{out}"
+        );
+        assert!(out.contains(" 2 "), "count should narrow to 2:\n{out}");
+    }
+
+    #[test]
+    fn theme_picker_draws_an_empty_state() {
+        let out = render(&theme_picker_app("zzzz")).join("\n");
+        assert!(out.contains("∅ nothing matches"), "no empty state:\n{out}");
+    }
+
+    #[test]
+    fn theme_picker_list_scrolls_rather_than_overflowing() {
+        // 142 rows must not grow the popup past the 30-row test terminal.
+        let app = theme_picker_app("");
+        let out = render(&app);
+        assert_eq!(out.len(), 30);
+        let rows = out.iter().filter(|l| l.contains("parks-")).count();
+        assert!(rows <= 12, "popup should cap its list, drew {rows} rows");
     }
 
     fn item_cost_app(data: fetchers::cost::ResourceCost) -> App {

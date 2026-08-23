@@ -42,6 +42,11 @@ impl Config {
     }
 
     pub fn save(&self) {
+        // A unit test that persists a preference must not rewrite the config of
+        // whoever is running `cargo test`.
+        if cfg!(test) {
+            return;
+        }
         let Some(p) = path() else {
             return;
         };

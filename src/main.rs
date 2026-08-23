@@ -538,6 +538,18 @@ async fn run(
                         _ => {}
                     }
                     needs_redraw = true;
+                } else if app.theme_picker.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                        (KeyCode::Esc, _) => app.theme_cancel(),
+                        (KeyCode::Enter, _) => app.theme_confirm(),
+                        (KeyCode::Backspace, _) => app.theme_pop(),
+                        (KeyCode::Down, _) => app.theme_next(),
+                        (KeyCode::Up, _) => app.theme_prev(),
+                        (KeyCode::Char(ch), _) => app.theme_push(ch),
+                        _ => {}
+                    }
+                    needs_redraw = true;
                 } else if app.wh_picker.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -964,10 +976,7 @@ async fn run(
                             needs_redraw = true;
                         }
                         (KeyCode::Char('t'), _) => {
-                            app.theme = app.theme.toggled();
-                            app.persist_theme();
-                            app.flash =
-                                Some((format!("✓ theme: {}", app.theme.name()), Instant::now()));
+                            app.open_theme_picker();
                             needs_redraw = true;
                         }
                         (KeyCode::Char('w'), _) => {

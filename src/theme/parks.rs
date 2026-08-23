@@ -717,7 +717,8 @@ pub static PARKS: &[Theme] = &[
         name: "Death Valley",
         kind: ThemeKind::Dark,
         origin: Origin::Parks,
-        keywords: "california nevada badwater borax and the mineral colors of artist s palette 1994",
+        keywords:
+            "california nevada badwater borax and the mineral colors of artist s palette 1994",
         palette: Palette {
             text: rgb(0xE8DCCB),
             dim: rgb(0x9E9488),
@@ -742,7 +743,8 @@ pub static PARKS: &[Theme] = &[
         name: "Death Valley Light",
         kind: ThemeKind::Light,
         origin: Origin::Parks,
-        keywords: "california nevada badwater borax and the mineral colors of artist s palette 1994",
+        keywords:
+            "california nevada badwater borax and the mineral colors of artist s palette 1994",
         palette: Palette {
             text: rgb(0x352C1F),
             dim: rgb(0x6F6457),

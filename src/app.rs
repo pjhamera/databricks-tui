@@ -12,12 +12,6 @@ use tokio::sync::{mpsc, oneshot};
 pub struct ThemeMode(&'static Theme);
 
 impl ThemeMode {
-    /// The next theme in the cycle — what `t` steps through.
-    pub fn toggled(self) -> Self {
-        let idx = theme::index_of(self.id()).unwrap_or(0);
-        ThemeMode(theme::nth((idx + 1) % theme::count()).unwrap_or(self.0))
-    }
-
     pub fn name(&self) -> &'static str {
         self.0.name
     }
@@ -636,6 +630,8 @@ pub struct App {
     failed_seen: [Option<std::collections::HashSet<(String, bool)>>; 7],
     /// Ctrl+P fuzzy jump overlay.
     pub jump: Option<Jump>,
+    /// `t` theme search overlay.
+    pub theme_picker: Option<ThemePicker>,
     /// Canonical pane indices in display order.
     pub pane_order: Vec<usize>,
     /// Hidden flag per canonical pane index.
@@ -678,6 +674,15 @@ pub struct App {
 pub struct Jump {
     pub query: String,
     pub index: usize,
+}
+
+/// `t` overlay: search all 142 themes by name, id, park or state. Moving the
+/// highlight applies the theme immediately, so the list is its own preview.
+pub struct ThemePicker {
+    pub query: String,
+    pub index: usize,
+    /// Restored on Esc, so browsing is non-destructive.
+    previous: ThemeMode,
 }
 
 /// Two-step input: a scope name, or a key then a (masked) value.
@@ -753,6 +758,7 @@ impl App {
             config: crate::config::Config::load(),
             failed_seen: Default::default(),
             jump: None,
+            theme_picker: None,
             pane_order: (0..7).collect(),
             hidden: [false; 7],
             pane_cfg: None,
@@ -1111,6 +1117,90 @@ impl App {
             .take(12)
             .map(|(_, i, name, label)| (i, name, label))
             .collect()
+    }
+
+    pub fn open_theme_picker(&mut self) {
+        self.theme_picker = Some(ThemePicker {
+            query: String::new(),
+            index: theme::index_of(self.theme.id()).unwrap_or(0),
+            previous: self.theme,
+        });
+    }
+
+    /// Themes matching the picker query, in table order. Matches name, id and
+    /// the keyword blob, so "california" and "granite" both find Yosemite.
+    pub fn theme_matches(&self) -> Vec<&'static Theme> {
+        let Some(tp) = &self.theme_picker else {
+            return Vec::new();
+        };
+        let q = tp.query.to_lowercase();
+        // ids and keywords are generated lowercase; only `name` needs folding.
+        theme::all()
+            .filter(|t| {
+                q.is_empty()
+                    || t.id.contains(&q)
+                    || t.keywords.contains(&q)
+                    || t.name.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+
+    pub fn theme_push(&mut self, c: char) {
+        if let Some(tp) = &mut self.theme_picker {
+            tp.query.push(c);
+            tp.index = 0;
+        }
+        self.theme_preview();
+    }
+
+    pub fn theme_pop(&mut self) {
+        if let Some(tp) = &mut self.theme_picker {
+            tp.query.pop();
+            tp.index = 0;
+        }
+        self.theme_preview();
+    }
+
+    pub fn theme_next(&mut self) {
+        let len = self.theme_matches().len();
+        if let Some(tp) = &mut self.theme_picker {
+            tp.index = (tp.index + 1).min(len.saturating_sub(1));
+        }
+        self.theme_preview();
+    }
+
+    pub fn theme_prev(&mut self) {
+        if let Some(tp) = &mut self.theme_picker {
+            tp.index = tp.index.saturating_sub(1);
+        }
+        self.theme_preview();
+    }
+
+    /// Paint the highlighted theme without persisting it — 142 palettes are
+    /// not something anyone can pick from a name alone.
+    fn theme_preview(&mut self) {
+        let Some(idx) = self.theme_picker.as_ref().map(|tp| tp.index) else {
+            return;
+        };
+        if let Some(t) = self.theme_matches().get(idx) {
+            self.theme = ThemeMode(t);
+        }
+    }
+
+    /// Keep the previewed theme and remember it.
+    pub fn theme_confirm(&mut self) {
+        if self.theme_picker.take().is_none() {
+            return;
+        }
+        self.persist_theme();
+        self.flash = Some((format!("✓ theme: {}", self.theme.name()), Instant::now()));
+    }
+
+    /// Put back whatever was active before the picker opened.
+    pub fn theme_cancel(&mut self) {
+        if let Some(tp) = self.theme_picker.take() {
+            self.theme = tp.previous;
+        }
     }
 
     pub fn jump_push(&mut self, c: char) {
@@ -4505,8 +4595,136 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_table, parse_params, token_at_cursor, ThemeMode};
+    use super::{from_table, parse_params, token_at_cursor, App, ThemeMode};
     use crate::theme;
+
+    fn app_with_picker() -> App {
+        let mut app = App::new(60, ThemeMode::default());
+        app.open_theme_picker();
+        app
+    }
+
+    #[test]
+    fn theme_picker_opens_at_the_current_theme() {
+        let mut app = App::new(60, ThemeMode::from_id("nord").unwrap());
+        app.open_theme_picker();
+        let matches = app.theme_matches();
+        let idx = app.theme_picker.as_ref().unwrap().index;
+        assert_eq!(matches[idx].id, "nord");
+    }
+
+    #[test]
+    fn theme_matches_returns_everything_on_an_empty_query() {
+        let app = app_with_picker();
+        assert_eq!(app.theme_matches().len(), theme::count());
+    }
+
+    #[test]
+    fn theme_matches_filters_on_name_id_and_keywords() {
+        let mut app = app_with_picker();
+        for c in "yos".chars() {
+            app.theme_push(c);
+        }
+        let ids: Vec<_> = app.theme_matches().iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["parks-yosemite", "parks-yosemite-light"]);
+
+        // A state, which lives only in the keyword blob.
+        let mut app = app_with_picker();
+        for c in "california".chars() {
+            app.theme_push(c);
+        }
+        let ids: Vec<_> = app.theme_matches().iter().map(|t| t.id).collect();
+        assert!(
+            ids.contains(&"parks-yosemite"),
+            "california should find Yosemite"
+        );
+
+        // A word from the blurb, which also lives in the keyword blob.
+        let mut app = app_with_picker();
+        for c in "granite".chars() {
+            app.theme_push(c);
+        }
+        let ids: Vec<_> = app.theme_matches().iter().map(|t| t.id).collect();
+        assert!(
+            ids.contains(&"parks-yosemite"),
+            "granite should find Yosemite"
+        );
+
+        // Matching is case-insensitive over display names.
+        let mut app = app_with_picker();
+        for c in "GRUVBOX".chars() {
+            app.theme_push(c);
+        }
+        assert_eq!(app.theme_matches().len(), 2);
+    }
+
+    #[test]
+    fn theme_matches_can_come_back_empty() {
+        let mut app = app_with_picker();
+        for c in "zzzz".chars() {
+            app.theme_push(c);
+        }
+        assert!(app.theme_matches().is_empty());
+    }
+
+    #[test]
+    fn theme_next_and_prev_clamp_at_the_ends() {
+        let mut app = app_with_picker();
+        app.theme_prev();
+        assert_eq!(
+            app.theme_picker.as_ref().unwrap().index,
+            0,
+            "prev clamps at the top"
+        );
+
+        for _ in 0..theme::count() + 5 {
+            app.theme_next();
+        }
+        assert_eq!(
+            app.theme_picker.as_ref().unwrap().index,
+            theme::count() - 1,
+            "next clamps at the bottom rather than wrapping"
+        );
+    }
+
+    #[test]
+    fn moving_the_highlight_previews_the_theme() {
+        let mut app = app_with_picker();
+        assert_eq!(app.theme.id(), "dark");
+        app.theme_next();
+        let expected = theme::nth(1).unwrap().id;
+        assert_eq!(
+            app.theme.id(),
+            expected,
+            "the highlighted theme is applied live"
+        );
+    }
+
+    #[test]
+    fn theme_cancel_restores_the_theme_the_picker_opened_with() {
+        let mut app = App::new(60, ThemeMode::from_id("dracula").unwrap());
+        app.open_theme_picker();
+        for c in "yos".chars() {
+            app.theme_push(c);
+        }
+        assert_eq!(app.theme.id(), "parks-yosemite", "previewed while typing");
+        app.theme_cancel();
+        assert_eq!(app.theme.id(), "dracula");
+        assert!(app.theme_picker.is_none());
+    }
+
+    #[test]
+    fn theme_confirm_keeps_the_preview_and_closes() {
+        let mut app = App::new(60, ThemeMode::from_id("dracula").unwrap());
+        app.open_theme_picker();
+        for c in "yos".chars() {
+            app.theme_push(c);
+        }
+        app.theme_confirm();
+        assert_eq!(app.theme.id(), "parks-yosemite");
+        assert!(app.theme_picker.is_none());
+        assert_eq!(app.config.theme.as_deref(), Some("parks-yosemite"));
+    }
 
     #[test]
     fn theme_default_is_dark() {
@@ -4528,20 +4746,6 @@ mod tests {
     fn theme_equality_is_by_id_not_address() {
         assert_eq!(ThemeMode::from_id("nord"), ThemeMode::from_id("nord"));
         assert_ne!(ThemeMode::from_id("nord"), ThemeMode::from_id("dracula"));
-    }
-
-    #[test]
-    fn theme_toggled_visits_every_theme_and_wraps() {
-        let start = ThemeMode::default();
-        let mut seen = vec![start.id()];
-        let mut cur = start;
-        for _ in 1..theme::count() {
-            cur = cur.toggled();
-            assert!(!seen.contains(&cur.id()), "toggled repeated {}", cur.id());
-            seen.push(cur.id());
-        }
-        assert_eq!(seen.len(), theme::count());
-        assert_eq!(cur.toggled(), start, "the cycle wraps back to the start");
     }
 
     #[test]
