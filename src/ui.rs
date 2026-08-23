@@ -2007,6 +2007,98 @@ fn draw_job_health(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     }
     lines.push(Line::default());
 
+    // The opt-in AI doctor. Everything above is free and always shown;
+    // this section is the only one that can cost anything, so its idle
+    // state says plainly what pressing the key would do.
+    lines.push(Line::from(Span::styled(
+        "DOCTOR",
+        Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+    )));
+    match &jh.doctor {
+        crate::app::DoctorState::Idle => {
+            let hint = if app.config.doctor_endpoint.is_some() {
+                "press d to ask the doctor — one model call, cached per change".to_string()
+            } else {
+                "off — set doctor_endpoint in ~/.config/databricks-tui/config.json".to_string()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("○ {hint}"),
+                Style::default().fg(p.dim),
+            )));
+        }
+        crate::app::DoctorState::Running => lines.push(Line::from(Span::styled(
+            format!(
+                "{} reading the latest failure and diagnosing…",
+                app.spinner()
+            ),
+            Style::default().fg(p.dim),
+        ))),
+        // A refused call is information, not an error: it says the free
+        // signals above already cover this job.
+        crate::app::DoctorState::Skipped(reason) => lines.push(Line::from(Span::styled(
+            format!("○ {reason}"),
+            Style::default().fg(p.dim),
+        ))),
+        crate::app::DoctorState::Failed(e) => lines.push(Line::from(Span::styled(
+            format!("✗ diagnosis failed — {e}"),
+            Style::default().fg(p.err),
+        ))),
+        crate::app::DoctorState::Done(v) => {
+            if !v.summary.trim().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    v.summary.clone(),
+                    Style::default().fg(p.text),
+                )));
+            }
+            if v.prescriptions.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "○ no prescription — the evidence doesn't identify a cause",
+                    Style::default().fg(p.dim),
+                )));
+            }
+            for (i, rx) in v.prescriptions.iter().enumerate() {
+                lines.push(Line::default());
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}. ", i + 1), Style::default().fg(p.dim)),
+                    Span::styled(
+                        rx.action.clone(),
+                        Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  ({} confidence)", rx.confidence.label()),
+                        Style::default().fg(p.dim),
+                    ),
+                ]));
+                if !rx.rationale.trim().is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("     {}", rx.rationale),
+                        Style::default().fg(p.text),
+                    )));
+                }
+                // The citation is the point: advice that can't name the
+                // line it rests on is advice the model invented, and
+                // showing the evidence is what makes that visible.
+                if !rx.evidence.trim().is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("     ← {}", rx.evidence),
+                        Style::default().fg(p.dim),
+                    )));
+                }
+            }
+            lines.push(Line::default());
+            let meter = if v.usage.cached {
+                "  cached — this diagnosis cost nothing".to_string()
+            } else {
+                format!(
+                    "  ~{} tokens in / ~{} out",
+                    v.usage.prompt_tokens_est, v.usage.completion_tokens_est
+                )
+            };
+            lines.push(Line::from(Span::styled(meter, Style::default().fg(p.dim))));
+        }
+    }
+    lines.push(Line::default());
+
     // Spark stage skew/spill — best-effort, from the job's most recent
     // run; the driver-proxy path used here isn't documented to work for
     // any particular length of time after the run finishes.
@@ -3513,6 +3605,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             dim("/"),
             key("k"),
             dim(" scroll   "),
+            key("d"),
+            dim(" doctor   "),
             key("esc"),
             dim(" back   "),
             key("q"),
