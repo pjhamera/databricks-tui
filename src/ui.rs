@@ -1,6 +1,7 @@
-use crate::app::{App, Panel, ThemeMode};
+use crate::app::{App, Panel};
 use crate::fetchers;
 use crate::shape::{DetailData, Shape, Status, TableData};
+use crate::theme::Palette;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
@@ -12,312 +13,6 @@ use ratatui::{
     Frame,
 };
 use std::time::Duration;
-
-struct Palette {
-    text: Color,
-    dim: Color,
-    border: Color,
-    warn: Color,
-    ok: Color,
-    err: Color,
-    key: Color,
-    brand: Color,
-    clusters: Color,
-    jobs: Color,
-    pipelines: Color,
-    warehouses: Color,
-    catalog: Color,
-    /// Header wordmark gradient endpoints.
-    grad_from: (u8, u8, u8),
-    grad_to: (u8, u8, u8),
-}
-
-const fn rgb(hex: u32) -> Color {
-    Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
-}
-
-const fn rgb3(hex: u32) -> (u8, u8, u8) {
-    ((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
-}
-
-fn palette(mode: ThemeMode) -> Palette {
-    match mode {
-        // Dark theme sticks to ANSI colors so it follows the terminal's own scheme.
-        ThemeMode::Dark => Palette {
-            text: Color::White,
-            dim: Color::DarkGray,
-            border: Color::DarkGray,
-            warn: Color::Yellow,
-            ok: Color::Green,
-            err: Color::Red,
-            key: Color::Cyan,
-            brand: Color::Red,
-            clusters: Color::Cyan,
-            jobs: Color::Magenta,
-            pipelines: Color::Green,
-            warehouses: Color::Blue,
-            catalog: rgb(0xFF8C42),
-            grad_from: rgb3(0xFF3621),
-            grad_to: rgb3(0xFFA046),
-        },
-        // Light theme uses explicit darker shades that stay readable on a white background.
-        ThemeMode::Light => Palette {
-            text: Color::Black,
-            dim: rgb(0x6B7280),
-            border: rgb(0x9CA3AF),
-            warn: rgb(0xB45309),
-            ok: rgb(0x15803D),
-            err: rgb(0xB91C1C),
-            key: rgb(0x0891B2),
-            brand: rgb(0xDC2626),
-            clusters: rgb(0x0891B2),
-            jobs: rgb(0xA21CAF),
-            pipelines: rgb(0x15803D),
-            warehouses: rgb(0x1D4ED8),
-            catalog: rgb(0xC2410C),
-            grad_from: rgb3(0xB91C1C),
-            grad_to: rgb3(0xC2410C),
-        },
-        ThemeMode::CatppuccinMocha => Palette {
-            text: rgb(0xCDD6F4),
-            dim: rgb(0x6C7086),
-            border: rgb(0x585B70),
-            warn: rgb(0xF9E2AF),
-            ok: rgb(0xA6E3A1),
-            err: rgb(0xF38BA8),
-            key: rgb(0x89DCEB),
-            brand: rgb(0xF38BA8),
-            clusters: rgb(0x89DCEB),
-            jobs: rgb(0xCBA6F7),
-            pipelines: rgb(0xA6E3A1),
-            warehouses: rgb(0x89B4FA),
-            catalog: rgb(0xFAB387),
-            grad_from: rgb3(0xF38BA8),
-            grad_to: rgb3(0xFAB387),
-        },
-        ThemeMode::CatppuccinMacchiato => Palette {
-            text: rgb(0xCAD3F5),
-            dim: rgb(0x6E738D),
-            border: rgb(0x5B6078),
-            warn: rgb(0xEED49F),
-            ok: rgb(0xA6DA95),
-            err: rgb(0xED8796),
-            key: rgb(0x91D7E3),
-            brand: rgb(0xED8796),
-            clusters: rgb(0x91D7E3),
-            jobs: rgb(0xC6A0F6),
-            pipelines: rgb(0xA6DA95),
-            warehouses: rgb(0x8AADF4),
-            catalog: rgb(0xF5A97F),
-            grad_from: rgb3(0xED8796),
-            grad_to: rgb3(0xF5A97F),
-        },
-        ThemeMode::CatppuccinFrappe => Palette {
-            text: rgb(0xC6D0F5),
-            dim: rgb(0x737994),
-            border: rgb(0x626880),
-            warn: rgb(0xE5C890),
-            ok: rgb(0xA6D189),
-            err: rgb(0xE78284),
-            key: rgb(0x99D1DB),
-            brand: rgb(0xE78284),
-            clusters: rgb(0x99D1DB),
-            jobs: rgb(0xCA9EE6),
-            pipelines: rgb(0xA6D189),
-            warehouses: rgb(0x8CAAEE),
-            catalog: rgb(0xEF9F76),
-            grad_from: rgb3(0xE78284),
-            grad_to: rgb3(0xEF9F76),
-        },
-        ThemeMode::CatppuccinLatte => Palette {
-            text: rgb(0x4C4F69),
-            dim: rgb(0x8C8FA1),
-            border: rgb(0xACB0BE),
-            warn: rgb(0xDF8E1D),
-            ok: rgb(0x40A02B),
-            err: rgb(0xD20F39),
-            key: rgb(0x04A5E5),
-            brand: rgb(0xD20F39),
-            clusters: rgb(0x04A5E5),
-            jobs: rgb(0x8839EF),
-            pipelines: rgb(0x40A02B),
-            warehouses: rgb(0x1E66F5),
-            catalog: rgb(0xFE640B),
-            grad_from: rgb3(0xD20F39),
-            grad_to: rgb3(0xFE640B),
-        },
-        ThemeMode::GruvboxDark => Palette {
-            text: rgb(0xEBDBB2),
-            dim: rgb(0x928374),
-            border: rgb(0x665C54),
-            warn: rgb(0xFABD2F),
-            ok: rgb(0xB8BB26),
-            err: rgb(0xFB4934),
-            key: rgb(0x8EC07C),
-            brand: rgb(0xFB4934),
-            clusters: rgb(0x8EC07C),
-            jobs: rgb(0xD3869B),
-            pipelines: rgb(0xB8BB26),
-            warehouses: rgb(0x83A598),
-            catalog: rgb(0xFE8019),
-            grad_from: rgb3(0xFB4934),
-            grad_to: rgb3(0xFE8019),
-        },
-        ThemeMode::GruvboxLight => Palette {
-            text: rgb(0x3C3836),
-            dim: rgb(0x928374),
-            border: rgb(0xBDAE93),
-            warn: rgb(0xB57614),
-            ok: rgb(0x79740E),
-            err: rgb(0x9D0006),
-            key: rgb(0x427B58),
-            brand: rgb(0x9D0006),
-            clusters: rgb(0x427B58),
-            jobs: rgb(0x8F3F71),
-            pipelines: rgb(0x79740E),
-            warehouses: rgb(0x076678),
-            catalog: rgb(0xAF3A03),
-            grad_from: rgb3(0x9D0006),
-            grad_to: rgb3(0xAF3A03),
-        },
-        ThemeMode::Dracula => Palette {
-            text: rgb(0xF8F8F2),
-            dim: rgb(0x6272A4),
-            border: rgb(0x44475A),
-            warn: rgb(0xF1FA8C),
-            ok: rgb(0x50FA7B),
-            err: rgb(0xFF5555),
-            key: rgb(0x8BE9FD),
-            brand: rgb(0xFF5555),
-            clusters: rgb(0x8BE9FD),
-            jobs: rgb(0xFF79C6),
-            pipelines: rgb(0x50FA7B),
-            warehouses: rgb(0xBD93F9),
-            catalog: rgb(0xFFB86C),
-            grad_from: rgb3(0xFF5555),
-            grad_to: rgb3(0xFFB86C),
-        },
-        ThemeMode::Nord => Palette {
-            text: rgb(0xD8DEE9),
-            dim: rgb(0x4C566A),
-            border: rgb(0x434C5E),
-            warn: rgb(0xEBCB8B),
-            ok: rgb(0xA3BE8C),
-            err: rgb(0xBF616A),
-            key: rgb(0x88C0D0),
-            brand: rgb(0xBF616A),
-            clusters: rgb(0x88C0D0),
-            jobs: rgb(0xB48EAD),
-            pipelines: rgb(0xA3BE8C),
-            warehouses: rgb(0x81A1C1),
-            catalog: rgb(0xD08770),
-            grad_from: rgb3(0xBF616A),
-            grad_to: rgb3(0xD08770),
-        },
-        ThemeMode::TokyoNight => Palette {
-            text: rgb(0xC0CAF5),
-            dim: rgb(0x565F89),
-            border: rgb(0x3B4261),
-            warn: rgb(0xE0AF68),
-            ok: rgb(0x9ECE6A),
-            err: rgb(0xF7768E),
-            key: rgb(0x7DCFFF),
-            brand: rgb(0xF7768E),
-            clusters: rgb(0x7DCFFF),
-            jobs: rgb(0xBB9AF7),
-            pipelines: rgb(0x9ECE6A),
-            warehouses: rgb(0x7AA2F7),
-            catalog: rgb(0xFF9E64),
-            grad_from: rgb3(0xF7768E),
-            grad_to: rgb3(0xFF9E64),
-        },
-        ThemeMode::RosePine => Palette {
-            text: rgb(0xE0DEF4),
-            dim: rgb(0x6E6A86),
-            border: rgb(0x403D52),
-            warn: rgb(0xF6C177),
-            ok: rgb(0x31748F),
-            err: rgb(0xEB6F92),
-            key: rgb(0x9CCFD8),
-            brand: rgb(0xEB6F92),
-            clusters: rgb(0x9CCFD8),
-            jobs: rgb(0xC4A7E7),
-            pipelines: rgb(0x31748F),
-            warehouses: rgb(0x3E8FB0),
-            catalog: rgb(0xEBBCBA),
-            grad_from: rgb3(0xEB6F92),
-            grad_to: rgb3(0xEBBCBA),
-        },
-        ThemeMode::Everforest => Palette {
-            text: rgb(0xD3C6AA),
-            dim: rgb(0x859289),
-            border: rgb(0x475258),
-            warn: rgb(0xDBBC7F),
-            ok: rgb(0xA7C080),
-            err: rgb(0xE67E80),
-            key: rgb(0x83C092),
-            brand: rgb(0xE67E80),
-            clusters: rgb(0x83C092),
-            jobs: rgb(0xD699B6),
-            pipelines: rgb(0xA7C080),
-            warehouses: rgb(0x7FBBB3),
-            catalog: rgb(0xE69875),
-            grad_from: rgb3(0xE67E80),
-            grad_to: rgb3(0xE69875),
-        },
-        ThemeMode::Kanagawa => Palette {
-            text: rgb(0xDCD7BA),
-            dim: rgb(0x727169),
-            border: rgb(0x54546D),
-            warn: rgb(0xE6C384),
-            ok: rgb(0x98BB6C),
-            err: rgb(0xC34043),
-            key: rgb(0x7FB4CA),
-            brand: rgb(0xC34043),
-            clusters: rgb(0x7FB4CA),
-            jobs: rgb(0x957FB8),
-            pipelines: rgb(0x98BB6C),
-            warehouses: rgb(0x7E9CD8),
-            catalog: rgb(0xFFA066),
-            grad_from: rgb3(0xC34043),
-            grad_to: rgb3(0xFFA066),
-        },
-        ThemeMode::SolarizedDark => Palette {
-            text: rgb(0x93A1A1),
-            dim: rgb(0x586E75),
-            border: rgb(0x073642),
-            warn: rgb(0xB58900),
-            ok: rgb(0x859900),
-            err: rgb(0xDC322F),
-            key: rgb(0x2AA198),
-            brand: rgb(0xDC322F),
-            clusters: rgb(0x2AA198),
-            jobs: rgb(0xD33682),
-            pipelines: rgb(0x859900),
-            warehouses: rgb(0x268BD2),
-            catalog: rgb(0xCB4B16),
-            grad_from: rgb3(0xDC322F),
-            grad_to: rgb3(0xCB4B16),
-        },
-        ThemeMode::OneDark => Palette {
-            text: rgb(0xABB2BF),
-            dim: rgb(0x5C6370),
-            border: rgb(0x3E4451),
-            warn: rgb(0xE5C07B),
-            ok: rgb(0x98C379),
-            err: rgb(0xE06C75),
-            key: rgb(0x56B6C2),
-            brand: rgb(0xE06C75),
-            clusters: rgb(0x56B6C2),
-            jobs: rgb(0xC678DD),
-            pipelines: rgb(0x98C379),
-            warehouses: rgb(0x61AFEF),
-            catalog: rgb(0xD19A66),
-            grad_from: rgb3(0xE06C75),
-            grad_to: rgb3(0xD19A66),
-        },
-    }
-}
 
 fn accent(panel: Panel, p: &Palette) -> Color {
     match panel {
@@ -340,10 +35,10 @@ fn pane_breadcrumb(app: &App, panel: Panel) -> String {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let p = palette(app.theme);
+    let p = app.theme.palette();
 
     if app.splash_active() {
-        draw_splash(f, f.area(), app, &p);
+        draw_splash(f, f.area(), app, p);
         return;
     }
 
@@ -356,48 +51,48 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    draw_header(f, root[0], app, &p);
-    draw_footer(f, root[2], app, &p);
+    draw_header(f, root[0], app, p);
+    draw_footer(f, root[2], app, p);
 
     if app.sql.is_some() {
-        draw_sql(f, root[1], app, &p);
+        draw_sql(f, root[1], app, p);
         if app.sql_complete.is_some() {
-            draw_sql_complete(f, root[1], app, &p);
+            draw_sql_complete(f, root[1], app, p);
         }
         // Running a query may pop the warehouse picker over the console.
         if app.wh_picker.is_some() {
-            draw_wh_picker(f, root[1], app, &p);
+            draw_wh_picker(f, root[1], app, p);
         }
         return;
     }
 
     if app.cost.is_some() {
-        draw_cost(f, root[1], app, &p);
+        draw_cost(f, root[1], app, p);
         return;
     }
 
     if app.item_cost.is_some() {
-        draw_item_cost(f, root[1], app, &p);
+        draw_item_cost(f, root[1], app, p);
         return;
     }
 
     if app.job_health.is_some() {
-        draw_job_health(f, root[1], app, &p);
+        draw_job_health(f, root[1], app, p);
         return;
     }
 
     if app.preview.is_some() {
-        draw_preview(f, root[1], app, &p);
+        draw_preview(f, root[1], app, p);
         return;
     }
 
     if app.run_view.is_some() {
-        draw_run(f, root[1], app, &p);
+        draw_run(f, root[1], app, p);
         return;
     }
 
     if app.detail.is_some() {
-        draw_detail(f, root[1], app, &p);
+        draw_detail(f, root[1], app, p);
         return;
     }
 
@@ -420,35 +115,35 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.filter_entry,
             &app.pane_fav_set(idx),
             app.fav_filter_active(idx),
-            &p,
+            p,
         );
         // Overlays must still render on top of the zoomed pane.
         if app.picker.is_some() {
-            draw_picker(f, root[1], app, &p);
+            draw_picker(f, root[1], app, p);
         }
         if app.wh_picker.is_some() {
-            draw_wh_picker(f, root[1], app, &p);
+            draw_wh_picker(f, root[1], app, p);
         }
         if app.problems.is_some() {
-            draw_problems(f, root[1], app, &p);
+            draw_problems(f, root[1], app, p);
         }
         if app.upcoming.is_some() {
-            draw_upcoming(f, root[1], app, &p);
+            draw_upcoming(f, root[1], app, p);
         }
         if app.jump.is_some() {
-            draw_jump(f, root[1], app, &p);
+            draw_jump(f, root[1], app, p);
         }
         if app.pane_cfg.is_some() {
-            draw_pane_cfg(f, root[1], app, &p);
+            draw_pane_cfg(f, root[1], app, p);
         }
         if app.secret_form.is_some() {
-            draw_secret_form(f, root[1], app, &p);
+            draw_secret_form(f, root[1], app, p);
         }
         if app.param_form.is_some() {
-            draw_param_form(f, root[1], app, &p);
+            draw_param_form(f, root[1], app, p);
         }
         if app.help {
-            draw_help(f, root[1], app, &p);
+            draw_help(f, root[1], app, p);
         }
         return;
     }
@@ -519,37 +214,37 @@ pub fn draw(f: &mut Frame, app: &App) {
                 app.filter_entry && focused,
                 &app.pane_fav_set(i),
                 app.fav_filter_active(i),
-                &p,
+                p,
             );
         }
     }
 
     if app.picker.is_some() {
-        draw_picker(f, root[1], app, &p);
+        draw_picker(f, root[1], app, p);
     }
     if app.wh_picker.is_some() {
-        draw_wh_picker(f, root[1], app, &p);
+        draw_wh_picker(f, root[1], app, p);
     }
     if app.problems.is_some() {
-        draw_problems(f, root[1], app, &p);
+        draw_problems(f, root[1], app, p);
     }
     if app.upcoming.is_some() {
-        draw_upcoming(f, root[1], app, &p);
+        draw_upcoming(f, root[1], app, p);
     }
     if app.jump.is_some() {
-        draw_jump(f, root[1], app, &p);
+        draw_jump(f, root[1], app, p);
     }
     if app.pane_cfg.is_some() {
-        draw_pane_cfg(f, root[1], app, &p);
+        draw_pane_cfg(f, root[1], app, p);
     }
     if app.secret_form.is_some() {
-        draw_secret_form(f, root[1], app, &p);
+        draw_secret_form(f, root[1], app, p);
     }
     if app.param_form.is_some() {
-        draw_param_form(f, root[1], app, &p);
+        draw_param_form(f, root[1], app, p);
     }
     if app.help {
-        draw_help(f, root[1], app, &p);
+        draw_help(f, root[1], app, p);
     }
 }
 
@@ -4318,6 +4013,7 @@ fn history_glyph(status: &Status) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ThemeMode;
 
     fn find<'a>(spans: &'a [Span], text: &str) -> &'a Span<'a> {
         spans
@@ -4328,8 +4024,8 @@ mod tests {
 
     #[test]
     fn sql_spans_color_keywords_strings_numbers_comments() {
-        let p = palette(ThemeMode::Dark);
-        let spans = sql_spans("SELECT count(x) FROM t WHERE s = 'bob' LIMIT 10 -- hi", &p);
+        let p = ThemeMode::default().palette();
+        let spans = sql_spans("SELECT count(x) FROM t WHERE s = 'bob' LIMIT 10 -- hi", p);
         assert_eq!(find(&spans, "SELECT").style.fg, Some(p.key));
         assert!(find(&spans, "SELECT")
             .style
@@ -4344,13 +4040,13 @@ mod tests {
 
     #[test]
     fn sql_spans_preserve_every_char() {
-        let p = palette(ThemeMode::Dark);
+        let p = ThemeMode::default().palette();
         for sql in [
             "SELECT `col a`, b - 1 FROM main.sales.orders WHERE s = 'unclosed",
             "-- only a comment",
             "  \"quoted id\" <> 3.5e2 ",
         ] {
-            let joined: String = sql_spans(sql, &p)
+            let joined: String = sql_spans(sql, p)
                 .iter()
                 .map(|s| s.content.as_ref())
                 .collect();
@@ -4389,7 +4085,7 @@ mod tests {
     }
 
     fn item_cost_app(data: fetchers::cost::ResourceCost) -> App {
-        let mut app = App::new(60, ThemeMode::Dark);
+        let mut app = App::new(60, ThemeMode::default());
         app.dismiss_splash();
         app.item_cost = Some(crate::app::ItemCostView {
             warehouse: "Starter Warehouse".to_string(),
@@ -4453,7 +4149,7 @@ mod tests {
     }
 
     fn sql_app(record: bool) -> App {
-        let mut app = App::new(60, ThemeMode::Dark);
+        let mut app = App::new(60, ThemeMode::default());
         app.dismiss_splash();
         app.sql = Some(crate::app::SqlConsole {
             input: "SELECT * FROM main.sales.orders LIMIT 50".to_string(),

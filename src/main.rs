@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -8,6 +8,7 @@ use crossterm::{
 use databricks_tui::{
     app::{App, ThemeMode},
     cli::{self as dbx, DatabricksCli},
+    theme::{self, Origin, ThemeKind},
     ui,
 };
 use ratatui::backend::CrosstermBackend;
@@ -28,54 +29,44 @@ struct Cli {
     #[arg(long, default_value = "30", help = "Auto-refresh interval in seconds")]
     refresh: u64,
 
-    #[arg(long, value_enum, help = "Color theme (default: last used, then dark)")]
-    theme: Option<ThemeArg>,
+    #[arg(
+        long,
+        help = "Color theme id, see --list-themes (default: last used, then dark)"
+    )]
+    theme: Option<String>,
+
+    #[arg(long, help = "List every available theme id and exit")]
+    list_themes: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum ThemeArg {
-    Dark,
-    Light,
-    CatppuccinMocha,
-    CatppuccinMacchiato,
-    CatppuccinFrappe,
-    CatppuccinLatte,
-    Gruvbox,
-    GruvboxLight,
-    Dracula,
-    Nord,
-    TokyoNight,
-    RosePine,
-    Everforest,
-    Kanagawa,
-    SolarizedDark,
-    OneDark,
-}
-
-impl From<ThemeArg> for ThemeMode {
-    fn from(t: ThemeArg) -> Self {
-        match t {
-            ThemeArg::Dark => ThemeMode::Dark,
-            ThemeArg::Light => ThemeMode::Light,
-            ThemeArg::CatppuccinMocha => ThemeMode::CatppuccinMocha,
-            ThemeArg::CatppuccinMacchiato => ThemeMode::CatppuccinMacchiato,
-            ThemeArg::CatppuccinFrappe => ThemeMode::CatppuccinFrappe,
-            ThemeArg::CatppuccinLatte => ThemeMode::CatppuccinLatte,
-            ThemeArg::Gruvbox => ThemeMode::GruvboxDark,
-            ThemeArg::GruvboxLight => ThemeMode::GruvboxLight,
-            ThemeArg::Dracula => ThemeMode::Dracula,
-            ThemeArg::Nord => ThemeMode::Nord,
-            ThemeArg::TokyoNight => ThemeMode::TokyoNight,
-            ThemeArg::RosePine => ThemeMode::RosePine,
-            ThemeArg::Everforest => ThemeMode::Everforest,
-            ThemeArg::Kanagawa => ThemeMode::Kanagawa,
-            ThemeArg::SolarizedDark => ThemeMode::SolarizedDark,
-            ThemeArg::OneDark => ThemeMode::OneDark,
+/// `--list-themes`: every id the --theme flag accepts, grouped so the list stays
+/// readable once the parks themes land.
+fn print_themes() {
+    for (origin, label) in [
+        (Origin::Builtin, "Built-in"),
+        (Origin::Parks, "US National Parks"),
+    ] {
+        for (kind, sub) in [(ThemeKind::Dark, "dark"), (ThemeKind::Light, "light")] {
+            let mut rows = theme::all()
+                .filter(|t| t.origin == origin && t.kind == kind)
+                .peekable();
+            if rows.peek().is_none() {
+                continue;
+            }
+            println!("{label} — {sub}");
+            for t in rows {
+                println!("  {:<24} {}", t.id, t.name);
+            }
+            println!();
         }
     }
+    println!(
+        "{} themes. Use --theme <id>, or press t in the app.",
+        theme::count()
+    );
 }
 
 #[derive(Subcommand)]
@@ -94,6 +85,11 @@ enum Command {
 async fn main() -> Result<()> {
     let args = Cli::parse();
 
+    if args.list_themes {
+        print_themes();
+        return Ok(());
+    }
+
     match args.command {
         Some(Command::Upgrade) => return tokio::task::spawn_blocking(upgrade).await?,
         Some(Command::Uninstall { yes }) => return uninstall(yes),
@@ -101,15 +97,36 @@ async fn main() -> Result<()> {
     }
 
     let cli = Arc::new(DatabricksCli::new(args.profile.clone()));
-    let mut app = App::new(args.refresh, ThemeMode::Dark);
+    let mut app = App::new(args.refresh, ThemeMode::default());
+    let flag_theme = match args.theme.as_deref() {
+        Some(id) => Some(ThemeMode::from_id(id).with_context(|| {
+            format!("unknown theme {id:?} — run `databricks-tui --list-themes` for the ids")
+        })?),
+        None => None,
+    };
+    // A junk id in config.json used to fall back to dark without saying so.
+    let stale = flag_theme.is_none()
+        && app
+            .config
+            .theme
+            .as_deref()
+            .is_some_and(|id| ThemeMode::from_id(id).is_none());
     // Flag beats remembered preference beats default.
-    app.theme = args
-        .theme
-        .map(ThemeMode::from)
+    app.theme = flag_theme
         .or_else(|| app.config.theme.as_deref().and_then(ThemeMode::from_id))
-        .unwrap_or(ThemeMode::Dark);
+        .unwrap_or_default();
     if args.theme.is_some() {
         app.persist_theme();
+    }
+    if stale {
+        let id = app.config.theme.clone().unwrap_or_default();
+        app.flash = Some((
+            format!(
+                "✗ unknown theme {id:?} in config — using {}",
+                app.theme.name()
+            ),
+            Instant::now(),
+        ));
     }
     app.profiles = dbx::list_profiles();
     app.profile = args.profile.or_else(|| Some("DEFAULT".to_string()));

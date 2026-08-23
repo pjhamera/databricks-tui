@@ -4,4 +4,5 @@ pub mod config;
 pub mod fetchers;
 pub mod schedule;
 pub mod shape;
+pub mod theme;
 pub mod ui;

@@ -1,101 +1,57 @@
 use crate::cli::DatabricksCli;
 use crate::fetchers;
 use crate::shape::{DetailData, Shape, Status};
+use crate::theme::{self, Palette, Theme};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ThemeMode {
-    Dark,
-    Light,
-    CatppuccinMocha,
-    CatppuccinMacchiato,
-    CatppuccinFrappe,
-    CatppuccinLatte,
-    GruvboxDark,
-    GruvboxLight,
-    Dracula,
-    Nord,
-    TokyoNight,
-    RosePine,
-    Everforest,
-    Kanagawa,
-    SolarizedDark,
-    OneDark,
-}
+/// A handle to one of the themes in [`crate::theme::all`]. Copy and pointer-sized:
+/// the colours live in a static table, not in the handle.
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeMode(&'static Theme);
 
 impl ThemeMode {
-    pub const ALL: &'static [ThemeMode] = &[
-        ThemeMode::Dark,
-        ThemeMode::Light,
-        ThemeMode::CatppuccinMocha,
-        ThemeMode::CatppuccinMacchiato,
-        ThemeMode::CatppuccinFrappe,
-        ThemeMode::CatppuccinLatte,
-        ThemeMode::GruvboxDark,
-        ThemeMode::GruvboxLight,
-        ThemeMode::Dracula,
-        ThemeMode::Nord,
-        ThemeMode::TokyoNight,
-        ThemeMode::RosePine,
-        ThemeMode::Everforest,
-        ThemeMode::Kanagawa,
-        ThemeMode::SolarizedDark,
-        ThemeMode::OneDark,
-    ];
-
     /// The next theme in the cycle — what `t` steps through.
     pub fn toggled(self) -> Self {
-        let idx = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
-        Self::ALL[(idx + 1) % Self::ALL.len()]
+        let idx = theme::index_of(self.id()).unwrap_or(0);
+        ThemeMode(theme::nth((idx + 1) % theme::count()).unwrap_or(self.0))
     }
 
     pub fn name(&self) -> &'static str {
-        match self {
-            ThemeMode::Dark => "Dark (terminal colors)",
-            ThemeMode::Light => "Light",
-            ThemeMode::CatppuccinMocha => "Catppuccin Mocha",
-            ThemeMode::CatppuccinMacchiato => "Catppuccin Macchiato",
-            ThemeMode::CatppuccinFrappe => "Catppuccin Frappé",
-            ThemeMode::CatppuccinLatte => "Catppuccin Latte",
-            ThemeMode::GruvboxDark => "Gruvbox Dark",
-            ThemeMode::GruvboxLight => "Gruvbox Light",
-            ThemeMode::Dracula => "Dracula",
-            ThemeMode::Nord => "Nord",
-            ThemeMode::TokyoNight => "Tokyo Night",
-            ThemeMode::RosePine => "Rosé Pine",
-            ThemeMode::Everforest => "Everforest Dark",
-            ThemeMode::Kanagawa => "Kanagawa",
-            ThemeMode::SolarizedDark => "Solarized Dark",
-            ThemeMode::OneDark => "One Dark",
-        }
+        self.0.name
     }
 
     /// Stable id, same kebab-case form the --theme flag accepts.
     pub fn id(&self) -> &'static str {
-        match self {
-            ThemeMode::Dark => "dark",
-            ThemeMode::Light => "light",
-            ThemeMode::CatppuccinMocha => "catppuccin-mocha",
-            ThemeMode::CatppuccinMacchiato => "catppuccin-macchiato",
-            ThemeMode::CatppuccinFrappe => "catppuccin-frappe",
-            ThemeMode::CatppuccinLatte => "catppuccin-latte",
-            ThemeMode::GruvboxDark => "gruvbox",
-            ThemeMode::GruvboxLight => "gruvbox-light",
-            ThemeMode::Dracula => "dracula",
-            ThemeMode::Nord => "nord",
-            ThemeMode::TokyoNight => "tokyo-night",
-            ThemeMode::RosePine => "rose-pine",
-            ThemeMode::Everforest => "everforest",
-            ThemeMode::Kanagawa => "kanagawa",
-            ThemeMode::SolarizedDark => "solarized-dark",
-            ThemeMode::OneDark => "one-dark",
-        }
+        self.0.id
+    }
+
+    pub fn palette(&self) -> &'static Palette {
+        &self.0.palette
+    }
+
+    pub fn theme(&self) -> &'static Theme {
+        self.0
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|t| t.id() == id)
+        theme::find(id).map(ThemeMode)
+    }
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        // The table is a compile-time constant that always carries this id.
+        Self::from_id("dark").expect("the dark built-in is always present")
+    }
+}
+
+/// Compared by id, not by address — two handles to the same theme are equal
+/// however they were resolved.
+impl PartialEq for ThemeMode {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
     }
 }
 
@@ -4549,7 +4505,51 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_table, parse_params, token_at_cursor};
+    use super::{from_table, parse_params, token_at_cursor, ThemeMode};
+    use crate::theme;
+
+    #[test]
+    fn theme_default_is_dark() {
+        assert_eq!(ThemeMode::default().id(), "dark");
+    }
+
+    #[test]
+    fn theme_from_id_round_trips_and_rejects_junk() {
+        for t in theme::all() {
+            let mode = ThemeMode::from_id(t.id).expect("every listed id resolves");
+            assert_eq!(mode.id(), t.id);
+            assert_eq!(mode.name(), t.name);
+        }
+        assert!(ThemeMode::from_id("no-such-theme").is_none());
+        assert!(ThemeMode::from_id("").is_none());
+    }
+
+    #[test]
+    fn theme_equality_is_by_id_not_address() {
+        assert_eq!(ThemeMode::from_id("nord"), ThemeMode::from_id("nord"));
+        assert_ne!(ThemeMode::from_id("nord"), ThemeMode::from_id("dracula"));
+    }
+
+    #[test]
+    fn theme_toggled_visits_every_theme_and_wraps() {
+        let start = ThemeMode::default();
+        let mut seen = vec![start.id()];
+        let mut cur = start;
+        for _ in 1..theme::count() {
+            cur = cur.toggled();
+            assert!(!seen.contains(&cur.id()), "toggled repeated {}", cur.id());
+            seen.push(cur.id());
+        }
+        assert_eq!(seen.len(), theme::count());
+        assert_eq!(cur.toggled(), start, "the cycle wraps back to the start");
+    }
+
+    #[test]
+    fn theme_palette_comes_from_the_table() {
+        let mode = ThemeMode::from_id("gruvbox").unwrap();
+        assert_eq!(mode.palette().text, theme::rgb(0xEBDBB2));
+        assert_eq!(mode.name(), "Gruvbox Dark");
+    }
 
     #[test]
     fn parse_params_pairs_and_errors() {
