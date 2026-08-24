@@ -209,6 +209,9 @@ Ids and names: `parks-yosemite` / "Yosemite" and `parks-yosemite-light` / "Yosem
 No "Parks " display prefix — the picker groups by `Origin` instead, and the `parks-` id
 prefix already namespaces them against future built-ins.
 
+> Follow-up: the shipped picker groups by `ThemeKind` (Tab switches dark/light) rather
+> than by `Origin`; `--list-themes` groups by both.
+
 ### 5. Replace the clap `ThemeArg` enum
 
 `ThemeArg` and `From<ThemeArg> for ThemeMode` (`src/main.rs:38-79`) are deleted.

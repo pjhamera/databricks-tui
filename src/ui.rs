@@ -1,7 +1,7 @@
 use crate::app::{App, Panel};
 use crate::fetchers;
 use crate::shape::{DetailData, Shape, Status, TableData};
-use crate::theme::Palette;
+use crate::theme::{Palette, ThemeKind};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
@@ -472,7 +472,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("H", "arrange panes: hide and reorder"),
                 ("z", "zoom the focused pane"),
                 ("w", "switch workspace profile"),
-                ("t", "search color themes"),
+                ("t", "search color themes (Tab: dark / light)"),
                 ("r", "refresh now"),
                 ("?", "this help"),
                 ("q / ctrl+c", "quit"),
@@ -906,7 +906,8 @@ fn draw_theme_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     let width = 60.min(area.width.saturating_sub(4));
     // The list scrolls rather than growing: ListState keeps the selection visible.
     let rows = (matches.len() as u16).clamp(1, 12);
-    let height = (rows + 5).min(area.height);
+    // borders(2) + prompt(2) + list(rows) + hint(2)
+    let height = (rows + 6).min(area.height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + 2.min(area.height.saturating_sub(height)),
@@ -914,12 +915,20 @@ fn draw_theme_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         height,
     };
     f.render_widget(Clear, popup);
+    let kind = match picker.kind {
+        ThemeKind::Dark => "Dark",
+        ThemeKind::Light => "Light",
+    };
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(" ⌕ ", Style::default().fg(p.key)),
             Span::styled(
                 "Theme ",
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("[{kind}] "),
+                Style::default().fg(p.key).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("{} ", matches.len()), Style::default().fg(p.dim)),
         ]))
@@ -932,8 +941,36 @@ fn draw_theme_picker(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
 
     let parts = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(2),
+        ])
         .split(inner);
+    // Tab is the only way to reach the other half of the themes, and nothing else
+    // on screen hints at it. Drawn on the second row of the two, for a blank line
+    // between the list and the hint.
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Tab", Style::default().fg(p.key)),
+            Span::styled(
+                match picker.kind {
+                    ThemeKind::Dark => " light themes   ",
+                    ThemeKind::Light => " dark themes   ",
+                },
+                Style::default().fg(p.dim),
+            ),
+            Span::styled("↑↓", Style::default().fg(p.key)),
+            Span::styled(" preview   ", Style::default().fg(p.dim)),
+            Span::styled("⏎", Style::default().fg(p.key)),
+            Span::styled(" keep", Style::default().fg(p.dim)),
+        ])),
+        Rect {
+            y: parts[2].y + 1,
+            height: parts[2].height.saturating_sub(1),
+            ..parts[2]
+        },
+    );
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(p.key)),
@@ -4180,24 +4217,52 @@ mod tests {
     #[test]
     fn theme_picker_draws_the_prompt_and_a_match_count() {
         let app = theme_picker_app("");
+        let dark = crate::theme::all()
+            .filter(|t| t.kind == ThemeKind::Dark)
+            .count();
         let out = render(&app).join("\n");
         assert!(out.contains("Theme"), "overlay title missing:\n{out}");
-        assert!(out.contains("142"), "match count missing:\n{out}");
+        assert!(out.contains("Dark"), "kind chip missing:\n{out}");
+        assert!(
+            out.contains(&dark.to_string()),
+            "match count should be the dark half ({dark}):\n{out}"
+        );
         assert!(out.contains("❯"), "query prompt missing:\n{out}");
         // Opens on the current theme, which is marked.
         assert!(out.contains("● "), "current-theme marker missing:\n{out}");
+        // Tab is undiscoverable without the hint line.
+        assert!(out.contains("Tab"), "kind-toggle hint missing:\n{out}");
     }
 
     #[test]
     fn theme_picker_draws_only_the_matching_rows() {
         let out = render(&theme_picker_app("yos")).join("\n");
         assert!(out.contains("Yosemite"), "expected Yosemite:\n{out}");
-        assert!(out.contains("parks-yosemite-light"));
+        assert!(
+            !out.contains("parks-yosemite-light"),
+            "the light twin belongs to the other kind:\n{out}"
+        );
         assert!(
             !out.contains("Dracula"),
             "non-matching row still drawn:\n{out}"
         );
-        assert!(out.contains(" 2 "), "count should narrow to 2:\n{out}");
+        assert!(out.contains(" 1 "), "count should narrow to 1:\n{out}");
+    }
+
+    #[test]
+    fn theme_picker_swaps_to_the_light_half_on_tab() {
+        let mut app = theme_picker_app("yos");
+        app.theme_toggle_kind();
+        let out = render(&app).join("\n");
+        assert!(out.contains("Light"), "chip should read Light:\n{out}");
+        assert!(
+            out.contains("parks-yosemite-light"),
+            "expected the light twin:\n{out}"
+        );
+        assert!(
+            out.contains("Tab"),
+            "hint should survive the toggle:\n{out}"
+        );
     }
 
     #[test]

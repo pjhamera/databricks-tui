@@ -546,6 +546,9 @@ async fn run(
                         (KeyCode::Backspace, _) => app.theme_pop(),
                         (KeyCode::Down, _) => app.theme_next(),
                         (KeyCode::Up, _) => app.theme_prev(),
+                        // Tab is its own KeyCode, so the catch-all below still
+                        // gets every character the search field wants.
+                        (KeyCode::Tab, _) | (KeyCode::BackTab, _) => app.theme_toggle_kind(),
                         (KeyCode::Char(ch), _) => app.theme_push(ch),
                         _ => {}
                     }

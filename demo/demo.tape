@@ -96,15 +96,16 @@ Sleep 4.5s
 Escape
 Sleep 900ms
 
-# --- 142 themes: the classics plus all 63 National Parks, searchable ---
+# --- 142 themes: the classics plus all 63 National Parks, searchable,
+# --- dark or light with Tab
 Type "t"
 Sleep 1.5s
 Type "yos"
 Sleep 1.5s
-Down
-Sleep 1.3s
-Up
-Sleep 1s
+Tab
+Sleep 1.6s
+Tab
+Sleep 1.2s
 Enter
 Sleep 2s
 

@@ -67,6 +67,11 @@ Light themes assume a light terminal background. The app never paints its
 own background, so a `*-light` theme in a dark terminal will look washed
 out — that is the terminal showing through, not the theme being broken.
 
+The `t` picker shows one kind at a time and opens on whichever your
+current theme is, so if the theme you are hunting for is missing from the
+list, it is in the other half: press `Tab`. The title bar says which you
+are looking at.
+
 ## Where the app keeps files
 
 Only `~/.config/databricks-tui/`: `history` (SQL console statements)

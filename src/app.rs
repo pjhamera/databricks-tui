@@ -1,7 +1,7 @@
 use crate::cli::DatabricksCli;
 use crate::fetchers;
 use crate::shape::{DetailData, Shape, Status};
-use crate::theme::{self, Palette, Theme};
+use crate::theme::{self, Palette, Theme, ThemeKind};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -676,11 +676,16 @@ pub struct Jump {
     pub index: usize,
 }
 
-/// `t` overlay: search all 142 themes by name, id, park or state. Moving the
-/// highlight applies the theme immediately, so the list is its own preview.
+/// `t` overlay: search themes by name, id, park or state. Moving the highlight
+/// applies the theme immediately, so the list is its own preview.
+///
+/// Dark and light are never listed together — 142 palettes designed against two
+/// opposite backgrounds are two lists, not one. Tab flips between them.
 pub struct ThemePicker {
     pub query: String,
     pub index: usize,
+    /// Only themes of this kind are listed; Tab flips it.
+    pub kind: ThemeKind,
     /// Restored on Esc, so browsing is non-destructive.
     previous: ThemeMode,
 }
@@ -693,6 +698,34 @@ pub struct SecretForm {
     pub value: String,
     /// 0 = typing the name/key, 1 = typing the value.
     pub stage: u8,
+}
+
+/// One kind of theme, filtered by the picker query. Split out of
+/// [`App::theme_matches`] so the Tab toggle can ask what the *other* kind holds
+/// before committing to it.
+fn matches_for(kind: ThemeKind, query: &str) -> Vec<&'static Theme> {
+    let q = query.to_lowercase();
+    // ids and keywords are generated lowercase; only `name` needs folding.
+    theme::all()
+        .filter(|t| t.kind == kind)
+        .filter(|t| {
+            q.is_empty()
+                || t.id.contains(&q)
+                || t.keywords.contains(&q)
+                || t.name.to_lowercase().contains(&q)
+        })
+        .collect()
+}
+
+/// The same theme in the other kind, where the id convention gives one:
+/// `parks-zion` ⇄ `parks-zion-light`, and `gruvbox` ⇄ `gruvbox-light`. Most
+/// built-in pairs are not derivable (`catppuccin-mocha` ⇄ `catppuccin-latte`),
+/// which is why callers need a fallback.
+fn twin_id(id: &str) -> String {
+    match id.strip_suffix("-light") {
+        Some(base) => base.to_string(),
+        None => format!("{id}-light"),
+    }
 }
 
 impl App {
@@ -1119,30 +1152,32 @@ impl App {
             .collect()
     }
 
+    /// Opens on the kind of theme already in use: on a light terminal you never
+    /// have to look at a dark palette to get to another light one.
     pub fn open_theme_picker(&mut self) {
+        let kind = self.theme.theme().kind;
+        // A position in `theme::all()` is not a position in the filtered list, so
+        // the highlight has to be found in the rows actually being drawn.
+        let index = matches_for(kind, "")
+            .iter()
+            .position(|t| t.id == self.theme.id())
+            .unwrap_or(0);
         self.theme_picker = Some(ThemePicker {
             query: String::new(),
-            index: theme::index_of(self.theme.id()).unwrap_or(0),
+            index,
+            kind,
             previous: self.theme,
         });
     }
 
-    /// Themes matching the picker query, in table order. Matches name, id and
-    /// the keyword blob, so "california" and "granite" both find Yosemite.
+    /// Themes matching the picker query, in table order, narrowed to the kind the
+    /// picker is showing. Matches name, id and the keyword blob, so "california"
+    /// and "granite" both find Yosemite.
     pub fn theme_matches(&self) -> Vec<&'static Theme> {
         let Some(tp) = &self.theme_picker else {
             return Vec::new();
         };
-        let q = tp.query.to_lowercase();
-        // ids and keywords are generated lowercase; only `name` needs folding.
-        theme::all()
-            .filter(|t| {
-                q.is_empty()
-                    || t.id.contains(&q)
-                    || t.keywords.contains(&q)
-                    || t.name.to_lowercase().contains(&q)
-            })
-            .collect()
+        matches_for(tp.kind, &tp.query)
     }
 
     pub fn theme_push(&mut self, c: char) {
@@ -1172,6 +1207,31 @@ impl App {
     pub fn theme_prev(&mut self) {
         if let Some(tp) = &mut self.theme_picker {
             tp.index = tp.index.saturating_sub(1);
+        }
+        self.theme_preview();
+    }
+
+    /// Tab: show the other kind. The query survives, and where the highlighted
+    /// theme has a twin under the `-light` id convention — every park, plus
+    /// `gruvbox` — the highlight follows it, so Tab reads as "same place, other
+    /// background". Where it does not, the position is clamped and kept.
+    pub fn theme_toggle_kind(&mut self) {
+        let Some(tp) = &self.theme_picker else {
+            return;
+        };
+        let twin = self.theme_matches().get(tp.index).map(|t| twin_id(t.id));
+        let kind = match tp.kind {
+            ThemeKind::Dark => ThemeKind::Light,
+            ThemeKind::Light => ThemeKind::Dark,
+        };
+        let query = tp.query.clone();
+        let rows = matches_for(kind, &query);
+        let index = twin
+            .and_then(|id| rows.iter().position(|t| t.id == id))
+            .unwrap_or_else(|| tp.index.min(rows.len().saturating_sub(1)));
+        if let Some(tp) = &mut self.theme_picker {
+            tp.kind = kind;
+            tp.index = index;
         }
         self.theme_preview();
     }
@@ -4596,12 +4656,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{from_table, parse_params, token_at_cursor, App, ThemeMode};
-    use crate::theme;
+    use crate::theme::{self, ThemeKind};
 
     fn app_with_picker() -> App {
         let mut app = App::new(60, ThemeMode::default());
         app.open_theme_picker();
         app
+    }
+
+    fn kind_count(kind: ThemeKind) -> usize {
+        theme::all().filter(|t| t.kind == kind).count()
+    }
+
+    fn picker_kind(app: &App) -> ThemeKind {
+        app.theme_picker.as_ref().unwrap().kind
     }
 
     #[test]
@@ -4613,10 +4681,102 @@ mod tests {
         assert_eq!(matches[idx].id, "nord");
     }
 
+    /// The picker shows one kind at a time, so an empty query is one half of the
+    /// table rather than all of it.
     #[test]
-    fn theme_matches_returns_everything_on_an_empty_query() {
+    fn theme_matches_lists_only_the_current_kind_on_an_empty_query() {
         let app = app_with_picker();
-        assert_eq!(app.theme_matches().len(), theme::count());
+        assert_eq!(picker_kind(&app), ThemeKind::Dark);
+        assert_eq!(app.theme_matches().len(), kind_count(ThemeKind::Dark));
+        assert!(app.theme_matches().len() < theme::count());
+        assert!(app
+            .theme_matches()
+            .iter()
+            .all(|t| t.kind == ThemeKind::Dark));
+    }
+
+    #[test]
+    fn the_picker_opens_on_the_kind_of_the_active_theme() {
+        for (id, kind) in [
+            ("dark", ThemeKind::Dark),
+            ("parks-zion", ThemeKind::Dark),
+            ("light", ThemeKind::Light),
+            ("gruvbox-light", ThemeKind::Light),
+            ("parks-zion-light", ThemeKind::Light),
+        ] {
+            let mut app = App::new(60, ThemeMode::from_id(id).unwrap());
+            app.open_theme_picker();
+            assert_eq!(picker_kind(&app), kind, "{id} opened on the wrong kind");
+            // And the highlight is on the active theme, which only holds if the
+            // index is a position in the filtered list rather than in theme::all().
+            let idx = app.theme_picker.as_ref().unwrap().index;
+            assert_eq!(app.theme_matches()[idx].id, id);
+        }
+    }
+
+    #[test]
+    fn toggling_the_kind_keeps_the_query_and_follows_the_twin() {
+        let mut app = app_with_picker();
+        for c in "zion".chars() {
+            app.theme_push(c);
+        }
+        assert_eq!(app.theme.id(), "parks-zion");
+
+        app.theme_toggle_kind();
+        assert_eq!(picker_kind(&app), ThemeKind::Light);
+        assert_eq!(app.theme_picker.as_ref().unwrap().query, "zion");
+        assert_eq!(app.theme.id(), "parks-zion-light", "flips live to the twin");
+        let ids: Vec<_> = app.theme_matches().iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["parks-zion-light"]);
+
+        app.theme_toggle_kind();
+        assert_eq!(picker_kind(&app), ThemeKind::Dark);
+        assert_eq!(app.theme.id(), "parks-zion", "and back again");
+    }
+
+    /// `catppuccin-mocha` has no derivable twin, so the highlight falls back to
+    /// the clamped position rather than jumping somewhere arbitrary.
+    #[test]
+    fn toggling_clamps_when_there_is_no_twin_and_when_the_list_is_shorter() {
+        let mut app = App::new(60, ThemeMode::from_id("catppuccin-mocha").unwrap());
+        app.open_theme_picker();
+        app.theme_toggle_kind();
+        assert_eq!(picker_kind(&app), ThemeKind::Light);
+        let tp = app.theme_picker.as_ref().unwrap();
+        assert!(tp.index < app.theme_matches().len());
+
+        // Deepest dark row -> the shorter light list must not index past the end.
+        let mut app = app_with_picker();
+        for _ in 0..kind_count(ThemeKind::Dark) {
+            app.theme_next();
+        }
+        app.theme_toggle_kind();
+        let len = app.theme_matches().len();
+        assert_eq!(len, kind_count(ThemeKind::Light));
+        assert!(app.theme_picker.as_ref().unwrap().index < len);
+    }
+
+    #[test]
+    fn toggling_an_empty_result_set_is_harmless() {
+        let mut app = app_with_picker();
+        for c in "zzzz".chars() {
+            app.theme_push(c);
+        }
+        app.theme_toggle_kind();
+        assert!(app.theme_matches().is_empty());
+        assert_eq!(app.theme_picker.as_ref().unwrap().index, 0);
+        app.theme_toggle_kind();
+        assert!(app.theme_matches().is_empty());
+    }
+
+    #[test]
+    fn cancel_still_restores_the_original_theme_after_a_toggle() {
+        let mut app = App::new(60, ThemeMode::from_id("dracula").unwrap());
+        app.open_theme_picker();
+        app.theme_toggle_kind();
+        assert_ne!(app.theme.id(), "dracula", "previewing a light theme");
+        app.theme_cancel();
+        assert_eq!(app.theme.id(), "dracula");
     }
 
     #[test]
@@ -4626,7 +4786,7 @@ mod tests {
             app.theme_push(c);
         }
         let ids: Vec<_> = app.theme_matches().iter().map(|t| t.id).collect();
-        assert_eq!(ids, vec!["parks-yosemite", "parks-yosemite-light"]);
+        assert_eq!(ids, vec!["parks-yosemite"], "the light twin is a Tab away");
 
         // A state, which lives only in the keyword blob.
         let mut app = app_with_picker();
@@ -4655,7 +4815,7 @@ mod tests {
         for c in "GRUVBOX".chars() {
             app.theme_push(c);
         }
-        assert_eq!(app.theme_matches().len(), 2);
+        assert_eq!(app.theme_matches().len(), 1);
     }
 
     #[test]
@@ -4682,7 +4842,7 @@ mod tests {
         }
         assert_eq!(
             app.theme_picker.as_ref().unwrap().index,
-            theme::count() - 1,
+            kind_count(ThemeKind::Dark) - 1,
             "next clamps at the bottom rather than wrapping"
         );
     }
@@ -4691,8 +4851,8 @@ mod tests {
     fn moving_the_highlight_previews_the_theme() {
         let mut app = app_with_picker();
         assert_eq!(app.theme.id(), "dark");
+        let expected = app.theme_matches()[1].id;
         app.theme_next();
-        let expected = theme::nth(1).unwrap().id;
         assert_eq!(
             app.theme.id(),
             expected,

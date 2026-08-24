@@ -20,6 +20,12 @@
   to filter by name, id, park, state or description ("california" and
   "granite" both find Yosemite); `↑`/`↓` preview live so you see a theme
   before choosing it, `Enter` keeps it, `Esc` puts back what you had.
+- The picker lists dark and light separately — 76 dark themes or 66 light
+  ones, never interleaved — and opens on whichever kind the current theme
+  is, so on a light terminal you no longer scroll past palettes built for
+  a dark one. `Tab` crosses over, keeping the query and following the
+  `-light` twin where there is one, so `parks-zion` ⇄ `parks-zion-light`
+  is a single keystroke.
 - An unknown `theme` id in `config.json` flashes a warning at startup
   instead of silently falling back to dark, and an unknown `--theme` value
   now exits pointing at `--list-themes`.

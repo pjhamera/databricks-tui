@@ -136,8 +136,10 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   Kanagawa, Solarized Dark and One Dark — plus all 63 US National Parks in
   dark and light, from
   [national-parks-themes](https://github.com/pjhamera/national-parks-themes).
-  `t` opens a search overlay (try a park, a state, or "granite"), `--theme`
-  picks at launch, `--list-themes` prints every id, and the app remembers
+  `t` opens a search overlay (try a park, a state, or "granite") showing
+  dark or light — never both at once — starting on whichever your current
+  theme is, with `Tab` to cross over. `--theme` picks at launch,
+  `--list-themes` prints every id, and the app remembers
   your theme and warehouse choice per profile
   across sessions (~/.config/databricks-tui/config.json)
 - Built-in self-upgrade from GitHub releases
@@ -201,9 +203,13 @@ Light themes — `light`, `catppuccin-latte`, `gruvbox-light` and the 63
 `parks-*-light` variants — assume a light terminal background. The app
 never paints its own background, so it inherits whatever your terminal
 uses: pick a light theme when your terminal is light, a dark one when it
-isn't. The parks repo also ships matching schemes for ghostty, kitty,
-alacritty, wezterm, iTerm2 and Windows Terminal, so `parks-zion-light` in
-your terminal and `--theme parks-zion-light` here is one coherent look.
+isn't. That is the one choice worth making first, so the `t` picker asks
+it first: 76 dark themes or 66 light ones, one list at a time, `Tab` to
+switch. It opens on the kind you are already using, so on a light terminal
+you never have to scroll past a dark palette. The parks repo also ships
+matching schemes for ghostty, kitty, alacritty, wezterm, iTerm2 and
+Windows Terminal, so `parks-zion-light` in your terminal and `--theme
+parks-zion-light` here is one coherent look.
 
 The Clusters pane shows interactive (UI/API-created) clusters only —
 job-created clusters are excluded, both for signal and because listing
@@ -246,7 +252,7 @@ them can be slow on busy workspaces.
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |
 | `Esc` | Close details / exit zoom |
-| `t` | Search color themes: type to filter all 142 by name, park, state or id — `↑`/`↓` preview live, `Enter` keeps, `Esc` puts back what you had |
+| `t` | Search color themes: dark or light, `Tab` switches — type to filter by name, park, state or id, `↑`/`↓` preview live, `Enter` keeps, `Esc` puts back what you had |
 | `H` | Arrange panes: `space` shows/hides, `J`/`K` reorders — layout adapts and persists |
 | `?` | Help: all keybindings grouped by context |
 | `r` | Force refresh |
