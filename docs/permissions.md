@@ -22,6 +22,7 @@ work with plain read access; the ones below have extra prerequisites.
 | Cost scoping to the current workspace | automatic | `SELECT` on `system.access.workspaces_latest` |
 | Lineage | `L` | `SELECT` on `system.access.table_lineage` |
 | Job health report | `i` | `SELECT` on `system.lakeflow.job_run_timeline` and `job_task_run_timeline` (the latter also feeds compute pressure via `system.compute.node_timeline`/`clusters`); both degrade gracefully if unreadable. Spark diagnostics (skew/spill) need no extra grant against the run's live driver; falling back to the delivered event log after the cluster terminates additionally needs `READ` on the cluster's `cluster_log_conf` DBFS destination |
+| AI job doctor | `d` in the health report | Opt-in and off by default: needs `doctor_endpoint` set in `~/.config/databricks-tui/config.json`, `CAN QUERY` on that model serving endpoint, and `CAN USE` on the warehouse the health report is already using (the call goes through `ai_query` there). Nothing extra is read — the digest is built from the health report you can already see |
 
 ## About system tables
 
@@ -83,6 +84,45 @@ Pipelines are attributed through `dlt_pipeline_id` and don't have this
 gap. Per-item spend also only reaches back 365 days, the retention of
 `system.billing.usage`, which is why the year has nothing to compare
 itself against.
+
+## About the AI doctor
+
+The doctor (`d` in the health report) is the only feature in the app that
+can bill. It is off until you point it at a model serving endpoint:
+
+```json
+{ "doctor_endpoint": "databricks-meta-llama-3-3-70b-instruct" }
+```
+
+in `~/.config/databricks-tui/config.json`. With no endpoint set, the code
+path never runs.
+
+Even configured, four things keep it cheap:
+
+- **It only fires on a keypress.** Nothing on a refresh timer calls it,
+  and the health report itself is entirely free.
+- **The rules gate the call.** A job whose thresholds all passed, or
+  whose failures have no retrievable error text, is refused with the
+  reason shown in place — a healthy job never costs anything. A job with
+  fewer than 5 runs in the window is refused too, unless there's error
+  text to read, since a statistical complaint off three runs is noise.
+- **Verdicts are cached on the evidence.** Identical evidence reuses the
+  previous answer from `~/.config/databricks-tui/doctor-cache.json` (64
+  entries, oldest evicted), so you pay once per real change in the job's
+  condition, not once per redraw. The pane says `cached — this diagnosis
+  cost nothing` when it did.
+- **Both ends are bounded.** ~6k characters of digest go in, 400 tokens
+  come back. The pane prints an estimated token count next to the answer.
+
+What gets sent is the digest, not the data: roughly twenty derived
+numbers already visible in the report, the flags, and one truncated
+stack trace with anything credential-shaped blanked. Raw run rows and
+event logs never leave your machine — and the call itself goes through
+`ai_query` on your own warehouse to your own endpoint, so the error text
+stays inside your workspace.
+
+Each prescription is rendered with the line of evidence it rests on. If
+a prescription can't cite anything, that's the signal it was invented.
 
 ## Auth
 
