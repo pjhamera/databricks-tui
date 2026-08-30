@@ -732,8 +732,43 @@ fn draw_pane_cfg(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
     f.render_stateful_widget(list, popup, &mut state);
 }
 
+/// Two spaces of indent plus the 24-column key field — where a wrapped
+/// description has to resume to stay in its own column.
+const KEY_COL: usize = 26;
+
+/// Greedy word wrap, used to lay the help out to a hanging indent, which
+/// `Wrap` can't do for us: it resumes a wrapped line at column zero, so on
+/// a narrow terminal every long entry would spill back under the key
+/// column and the two-column read would be gone.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let w = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut len = 0usize;
+    for word in text.split_whitespace() {
+        let wl = word.chars().count();
+        if len > 0 && len + 1 + wl > w {
+            out.push(std::mem::take(&mut cur));
+            len = 0;
+        }
+        if len > 0 {
+            cur.push(' ');
+            len += 1;
+        }
+        // A word too wide for the column is left to `Wrap` to break.
+        cur.push_str(word);
+        len += wl;
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
-    let width = 74.min(area.width.saturating_sub(4));
+    // Wide enough that the longest entry below fits on one row; `.wrap()`
+    // below is what covers a terminal too narrow to give it that.
+    let width = 100.min(area.width.saturating_sub(4));
     let height = area.height.saturating_sub(2);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -742,6 +777,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
         height,
     };
     f.render_widget(Clear, popup);
+    // Borders take two columns and the block's padding one on each side.
+    let inner = popup.width.saturating_sub(4) as usize;
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(" ? ", Style::default().fg(p.key)),
@@ -820,6 +857,13 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             ],
         ),
         (
+            "Job health (i on a job)",
+            &[
+                ("d", "doctor: AI read of the error text (opt-in)"),
+                ("j / k", "scroll the report"),
+            ],
+        ),
+        (
             "Table previews",
             &[
                 ("j / k", "scroll rows"),
@@ -864,15 +908,41 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
             Style::default().fg(p.key).add_modifier(Modifier::BOLD),
         )));
         for (k, desc) in *keys {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {k:<24}"), Style::default().fg(p.warn)),
-                Span::styled(*desc, Style::default().fg(p.text)),
-            ]));
+            for (n, chunk) in wrap_words(desc, inner.saturating_sub(KEY_COL))
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(if n == 0 {
+                    Line::from(vec![
+                        Span::styled(format!("  {k:<24}"), Style::default().fg(p.warn)),
+                        Span::styled(chunk, Style::default().fg(p.text)),
+                    ])
+                } else {
+                    // Hanging indent, so a wrapped entry still reads as two
+                    // columns instead of restarting under the key.
+                    Line::from(Span::styled(
+                        format!("{:KEY_COL$}{chunk}", ""),
+                        Style::default().fg(p.text),
+                    ))
+                });
+            }
         }
         lines.push(Line::default());
     }
-    let total = lines.len();
+    let total: usize = lines
+        .iter()
+        .map(|l| {
+            wrapped_rows(
+                &l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>(),
+                inner,
+            )
+        })
+        .sum();
     let par = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
         .scroll((app.help_scroll, 0))
         .block(block);
     f.render_widget(par, popup);
@@ -4215,6 +4285,51 @@ fn scrollbar(f: &mut Frame, area: Rect, total: usize, viewport: usize, pos: usiz
     );
 }
 
+/// Rows one line occupies once the paragraph's word wrapper has had it.
+///
+/// Greedy break on whitespace, hard-splitting a word wider than the line,
+/// which is what ratatui's `WordWrapper` does with `trim: false`. Needed
+/// because `.wrap()` severs the last assumption a scrollbar over a
+/// `Paragraph` can make for free — that one line in is one row out — and
+/// counting logical lines would give the help a track shorter than its
+/// own scroll the moment any entry is too long for the popup.
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    let w = width.max(1);
+    let cs: Vec<char> = text.chars().collect();
+    let (mut rows, mut col, mut i) = (1usize, 0usize, 0usize);
+    while i < cs.len() {
+        if cs[i].is_whitespace() {
+            if col == w {
+                rows += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < cs.len() && !cs[i].is_whitespace() {
+            i += 1;
+        }
+        let len = i - start;
+        if len > w {
+            // Wider than a whole line: fills what's left of this row, then
+            // as many further rows as it takes.
+            let rest = len - (w - col);
+            rows += 1 + rest.saturating_sub(1) / w;
+            col = rest - rest.saturating_sub(1) / w * w;
+        } else {
+            if col + len > w {
+                rows += 1;
+                col = 0;
+            }
+            col += len;
+        }
+    }
+    rows
+}
+
 /// Rendered height of text wrapped at `width` columns.
 fn wrapped_height(text: &str, width: usize) -> usize {
     let w = width.max(1);
@@ -4413,6 +4528,33 @@ fn history_glyph(status: &Status) -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wrapped_rows_counts_rendered_rows_not_lines() {
+        // Fits: one row, whatever the word count.
+        assert_eq!(wrapped_rows("", 10), 1);
+        assert_eq!(wrapped_rows("abc def", 10), 1);
+        assert_eq!(wrapped_rows("exactly-10", 10), 1);
+        // Breaks on whitespace rather than mid-word.
+        assert_eq!(wrapped_rows("abcd efgh", 5), 2);
+        assert_eq!(wrapped_rows("aa bb cc dd", 5), 2);
+        // A word wider than the line is split across as many rows as it needs.
+        assert_eq!(wrapped_rows("aaaaaaaaaaaa", 5), 3);
+    }
+
+    /// The help popup pads its key column to 24 and indents by 2, so a
+    /// description only has `width - 26` before it wraps. The guard is
+    /// that the scrollbar sees the wrap at all.
+    #[test]
+    fn help_entry_wraps_only_once_too_long_for_the_popup() {
+        let entry = format!(
+            "  {:<24}{}",
+            "i", "jobs: deep health report \u{2014} trends, task attribution, compute pressure"
+        );
+        assert_eq!(entry.chars().count(), 95);
+        assert_eq!(wrapped_rows(&entry, 96), 1);
+        assert_eq!(wrapped_rows(&entry, 70), 2);
+    }
+
     fn find<'a>(spans: &'a [Span], text: &str) -> &'a Span<'a> {
         spans
             .iter()
@@ -4480,6 +4622,62 @@ mod tests {
 
     fn render(app: &App) -> Vec<String> {
         render_at(app, 100)
+    }
+
+    /// `Wrap` alone resumes at column zero, which would drop a wrapped
+    /// description back under the key column.
+    #[test]
+    fn help_hangs_wrapped_entries_under_the_description() {
+        let out = render_at(&help_app(4), 80);
+        let tail = out
+            .iter()
+            .find(|l| l.contains("attribution, compute pressure"))
+            .expect("wrapped tail missing");
+        let col = tail.find("attribution").unwrap();
+        let head = out
+            .iter()
+            .find(|l| l.contains("jobs: deep health report"))
+            .expect("wrapped head missing");
+        assert_eq!(col, head.find("jobs: deep").unwrap());
+    }
+
+    fn help_app(scroll: u16) -> App {
+        let mut app = App::new(60, ThemeMode::Dark);
+        app.dismiss_splash();
+        app.help = true;
+        app.help_scroll = scroll;
+        app
+    }
+
+    /// The popup used to be 74 wide and clipped, so its longest entries
+    /// rendered as sentence fragments. Both halves matter: wide enough
+    /// for the longest one, and wrapping rather than truncating when the
+    /// terminal won't give it that.
+    #[test]
+    fn help_renders_long_entries_in_full() {
+        let out = render_at(&help_app(4), 110).join("\n");
+        assert!(
+            out.contains(
+                "jobs: deep health report \u{2014} trends, task attribution, compute pressure"
+            ),
+            "longest entry clipped:\n{out}"
+        );
+
+        let narrow = render_at(&help_app(4), 80).join("\n");
+        assert!(
+            narrow.contains("compute pressure"),
+            "tail of the entry lost instead of wrapped:\n{narrow}"
+        );
+    }
+
+    #[test]
+    fn help_lists_the_doctor_under_job_health() {
+        let out = render_at(&help_app(44), 110).join("\n");
+        assert!(out.contains("Job health"), "{out}");
+        assert!(
+            out.contains("doctor: AI read of the error text (opt-in)"),
+            "{out}"
+        );
     }
 
     fn item_cost_app(data: fetchers::cost::ResourceCost) -> App {
