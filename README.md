@@ -80,6 +80,31 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   median of its recent successful runs gets an amber `⚠ 2.5× usual` tag
   in the jobs pane, a line in the problems view and a one-time bell —
   hung runs sit there looking green; this is what spots them
+- Per-job health report (`i` on a job): 30 days of run history read
+  straight from `system.lakeflow` — success rate, duration trend, and
+  which task is actually responsible for the failures — plus CPU and
+  memory pressure from the run's own clusters, and flags for the things
+  that point at a fix: memory pressure, over-provisioning, I/O wait, a
+  node type that doesn't match the work. A best-effort probe of the most
+  recent run adds per-stage spill and task-duration skew from the live
+  Spark driver, falling back to the cluster's delivered event log once
+  the driver is gone; every section degrades to a plain unavailable line
+  rather than taking the report down with it
+- AI job doctor (`d` in the health report): the one signal a threshold
+  can't read is the free text of a failed task's stack trace, where an
+  OOM, a permission denial, an upstream schema change and a transient
+  429 all look identical to a rule and call for completely different
+  fixes. The doctor sends a digest of the report plus that error text
+  through `ai_query` on the warehouse the report already opened, and
+  gets back ranked fixes — each with its confidence and the line of
+  evidence it rests on, because advice that can't cite its evidence is
+  advice the model invented. Off unless you set `doctor_endpoint` in
+  `~/.config/databricks-tui/config.json` to a model serving endpoint;
+  even then the rules gate the call — a healthy job never asks — and
+  identical evidence reuses the cached verdict, so an auto-refreshing
+  dashboard pays once per real change in the job's condition rather than
+  once per redraw. The call runs on your own warehouse against your own
+  endpoint: the error text never leaves the workspace
 - Watch a run (`W` in a run view): keep doing other things and get a
   terminal bell + flash the moment it finishes, success or failure —
   a `👁` counter in the header shows what's being watched
@@ -181,7 +206,8 @@ databricks-tui uninstall --yes    # no prompt
 ```
 
 Removes the binary from wherever it is installed. The only other files the
-app keeps are under `~/.config/databricks-tui/` (SQL history, preferences).
+app keeps are under `~/.config/databricks-tui/` (SQL history, preferences,
+and the job doctor's cached verdicts).
 
 ## Usage
 
@@ -233,6 +259,8 @@ them can be slow on busy workspaces.
 | `g` | Show access: effective grants / permissions for the selected item |
 | `$` | DBU usage for the last 14 days (queries system tables on a warehouse) |
 | `c` (jobs/pipelines pane) | Spend for the selected job or pipeline over the last week, month, quarter and year, each against the window before it, plus a per-month breakdown |
+| `i` (jobs pane) | Job health: 30 days of success-rate and duration trends, per-task failure attribution, cluster CPU/memory pressure, and a spill/skew probe of the most recent run |
+| `d` (job health) | Ask the AI doctor to read the failure text and prescribe ranked fixes with cited evidence — off unless `doctor_endpoint` is set in `~/.config/databricks-tui/config.json` |
 | `o` | Open selected item in the workspace web UI |
 | `z` | Zoom focused panel to full screen |
 | `w` | Switch workspace (pick a profile from ~/.databrickscfg) |
