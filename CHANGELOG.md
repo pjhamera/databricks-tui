@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.35.0] - 2026-08-31
 
 ### Added
 - All 63 US National Parks as color themes, in dark and light, taking the
@@ -43,6 +43,55 @@
   built-ins already occupy (kanagawa 0.039, tokyo-night 0.061). Text is
   iced blue on Denali and sandstone on Zion; contrast is untouched, and
   `--verify` still diffs the pre-tint colours against upstream.
+
+## [0.34.0] - 2026-08-30
+
+### Added
+- AI job doctor: `d` in the health report (`i`) asks a model to read the
+  one signal a threshold can't — the free text of a failed task's error
+  and stack trace, where an OOM, a permission denial, an upstream schema
+  change and a transient 429 all look identical to a rule and call for
+  completely different fixes. Returns ranked prescriptions, each with a
+  confidence and the line of evidence it rests on, quoted back from the
+  digest; a prescription that cites nothing is one the model invented,
+  and rendering the citation next to the advice is what makes that
+  visible.
+
+  This is the only feature in the app that spends money, so it is built
+  around not spending it. It is off unless `doctor_endpoint` is set in
+  `~/.config/databricks-tui/config.json` — that one field is both the
+  switch and the endpoint. It fires on a keypress and never on a
+  refresh. The existing rule-based flags gate the call: a job with
+  nothing flagged, no retrievable error text and no stage signal is
+  refused with the reason shown in its place, as is a job with fewer
+  than 5 runs in the window unless there's error text to stand on — a
+  statistical complaint off three runs is a coin flip dressed up as a
+  finding. Verdicts are cached on a hash of the evidence in
+  `doctor-cache.json` (64 entries, oldest evicted), so an auto-refreshing
+  dashboard pays once per real change in the job's condition rather than
+  once per redraw, and the pane says so when an answer was free. Input is
+  capped at ~6k characters and output at 400 tokens, with an estimated
+  token count printed next to the answer.
+
+  What goes over the wire is the digest, not the data: ~20 pre-rounded
+  numbers already visible in the report, the flags, and one truncated
+  stack trace with anything credential-shaped blanked. Field order is
+  fixed and every number pre-rounded so an unchanged job produces
+  byte-identical output — a digest that jittered in its last decimal
+  place would miss the cache on every refresh and quietly bill for it.
+  The call goes through `ai_query` on the warehouse the health report
+  already opened, so there's no new infra, no new auth, and the job's
+  error text never leaves the workspace.
+
+### Fixed
+- The doctor's failure-text lookup scans back through 50 runs rather than
+  reusing the run drill-down's list, whose limit of 20 is tuned for that
+  view's visible history. A job that fails once a month puts its failure
+  well outside a 20-run window, so the gate would skip a job whose health
+  view was plainly showing a failure — the numbers said something was
+  wrong and the doctor said there was nothing to diagnose. The health
+  report's own window is 30 days, so the scan has to reach at least that
+  far.
 
 ## [0.33.0] - 2026-08-23
 

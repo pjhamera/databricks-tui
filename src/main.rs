@@ -296,6 +296,9 @@ async fn run(
         if app.poll_job_health_live() {
             needs_redraw = true;
         }
+        if app.poll_doctor() {
+            needs_redraw = true;
+        }
         if app.poll_sql() {
             needs_redraw = true;
         }
@@ -689,6 +692,11 @@ async fn run(
                         }
                         (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                             app.job_health_scroll(-1);
+                            needs_redraw = true;
+                        }
+                        // The only keypress in the app that can bill.
+                        (KeyCode::Char('d'), _) => {
+                            app.open_doctor(&cli);
                             needs_redraw = true;
                         }
                         _ => {}

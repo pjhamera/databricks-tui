@@ -21,6 +21,12 @@ pub struct Config {
     /// is the ListItem id when present (job id, catalog full name), else name.
     #[serde(default)]
     pub favorites: HashMap<String, HashMap<String, Vec<String>>>,
+    /// Model serving endpoint the AI job doctor runs its prescriptions
+    /// through, via `ai_query` on the selected warehouse. This is both
+    /// the switch and the setting: `None` — the default — means the
+    /// doctor never runs and never bills. See `fetchers::doctor`.
+    #[serde(default)]
+    pub doctor_endpoint: Option<String>,
 }
 
 fn path() -> Option<PathBuf> {

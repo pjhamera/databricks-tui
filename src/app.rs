@@ -416,10 +416,26 @@ pub struct ItemCostView {
     pub data: Option<Result<fetchers::cost::ResourceCost, String>>,
 }
 
+/// Where the opt-in AI doctor has got to. Starts `Idle` and stays there
+/// unless the user presses the key — this is the one thing in the app
+/// that spends money, so nothing here is triggered by a refresh.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DoctorState {
+    /// Never asked.
+    Idle,
+    /// Gate + call in flight.
+    Running,
+    /// The gate declined; carries the reason to show in its place.
+    Skipped(String),
+    Done(fetchers::doctor::DoctorVerdict),
+    Failed(String),
+}
+
 /// Deep per-job diagnostics: trends/attribution/compute pressure from
 /// system tables, plus a best-effort live spill/skew probe.
 pub struct JobHealthView {
     pub warehouse: String,
+    pub warehouse_id: String,
     pub job_id: String,
     pub job_name: String,
     pub data: Option<Result<fetchers::job_health::JobHealthData, String>>,
@@ -427,6 +443,8 @@ pub struct JobHealthView {
     /// from `data` so a probe failure never affects the rest of the view.
     pub live: Option<Result<fetchers::spark_live::SparkLiveData, String>>,
     pub scroll: u16,
+    /// Opt-in AI diagnosis, on demand only.
+    pub doctor: DoctorState,
 }
 
 /// Drill-down into a single job run or pipeline update, layered over
@@ -587,6 +605,7 @@ pub struct App {
     >,
     job_health_live_rx:
         Option<oneshot::Receiver<Result<fetchers::spark_live::SparkLiveData, String>>>,
+    doctor_rx: Option<oneshot::Receiver<DoctorState>>,
     /// Numeric id of the current workspace, resolved lazily for cost
     /// scoping and cached for the session.
     workspace_id: Option<String>,
@@ -765,6 +784,7 @@ impl App {
             job_health: None,
             job_health_rx: None,
             job_health_live_rx: None,
+            doctor_rx: None,
             workspace_id: None,
             sql: None,
             sql_rx: None,
@@ -1088,6 +1108,7 @@ impl App {
         self.job_health = None;
         self.job_health_rx = None;
         self.job_health_live_rx = None;
+        self.doctor_rx = None;
         self.workspace_id = None;
         self.sql = None;
         self.sql_rx = None;
@@ -2373,12 +2394,15 @@ impl App {
     ) {
         self.job_health = Some(JobHealthView {
             warehouse: warehouse_name,
+            warehouse_id: warehouse_id.clone(),
             job_id: job_id.clone(),
             job_name,
             data: None,
             live: None,
             scroll: 0,
+            doctor: DoctorState::Idle,
         });
+        self.doctor_rx = None;
 
         let (tx, rx) = oneshot::channel();
         self.job_health_rx = Some(rx);
@@ -2427,10 +2451,74 @@ impl App {
         });
     }
 
+    /// Asks the AI doctor about the currently open job. Key-triggered
+    /// only, never on a refresh: `fetchers::doctor::gate` decides
+    /// whether this actually costs anything, and it is deliberately the
+    /// spawned task — not this function — that pays for the failure-text
+    /// fetch, so the keypress stays instant.
+    pub fn open_doctor(&mut self, cli: &Arc<DatabricksCli>) {
+        let Some(jh) = &mut self.job_health else {
+            return;
+        };
+        if jh.doctor == DoctorState::Running {
+            return;
+        }
+        // The digest is built from the health report, so there is
+        // nothing to diagnose until that has landed.
+        let Some(Ok(data)) = &jh.data else {
+            self.flash = Some((
+                "✗ health report is still loading".to_string(),
+                Instant::now(),
+            ));
+            return;
+        };
+
+        let data = data.clone();
+        let live = match &jh.live {
+            Some(Ok(l)) => Some(l.clone()),
+            _ => None,
+        };
+        let (job_id, job_name) = (jh.job_id.clone(), jh.job_name.clone());
+        let warehouse_id = jh.warehouse_id.clone();
+        let endpoint = self.config.doctor_endpoint.clone();
+        jh.doctor = DoctorState::Running;
+
+        let (tx, rx) = oneshot::channel();
+        self.doctor_rx = Some(rx);
+        let cli = Arc::clone(cli);
+        tokio::spawn(async move {
+            // Cheap (two CLI calls, no warehouse time) and fetched before
+            // gating because its presence is what lets a thin-sample job
+            // through the gate at all.
+            let failure = fetchers::doctor::latest_failure_output(&cli, &job_id).await;
+            let state = match fetchers::doctor::gate(
+                endpoint.as_deref(),
+                &job_name,
+                &data,
+                live.as_ref(),
+                failure.as_deref(),
+            ) {
+                fetchers::doctor::Gate::Skip(reason) => DoctorState::Skipped(reason),
+                fetchers::doctor::Gate::Cached(verdict) => DoctorState::Done(*verdict),
+                fetchers::doctor::Gate::Ask(digest) => {
+                    // Unreachable with no endpoint: the gate skips first.
+                    let endpoint = endpoint.unwrap_or_default();
+                    match fetchers::doctor::prescribe(&cli, &warehouse_id, &endpoint, &digest).await
+                    {
+                        Ok(verdict) => DoctorState::Done(verdict),
+                        Err(e) => DoctorState::Failed(e),
+                    }
+                }
+            };
+            let _ = tx.send(state);
+        });
+    }
+
     pub fn close_job_health(&mut self) {
         self.job_health = None;
         self.job_health_rx = None;
         self.job_health_live_rx = None;
+        self.doctor_rx = None;
     }
 
     pub fn job_health_scroll(&mut self, delta: i32) {
@@ -3312,6 +3400,29 @@ impl App {
             Err(oneshot::error::TryRecvError::Empty) => false,
             Err(oneshot::error::TryRecvError::Closed) => {
                 self.job_health_rx = None;
+                true
+            }
+        }
+    }
+
+    pub fn poll_doctor(&mut self) -> bool {
+        let Some(rx) = &mut self.doctor_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(state) => {
+                if let Some(jh) = &mut self.job_health {
+                    jh.doctor = state;
+                }
+                self.doctor_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                if let Some(jh) = &mut self.job_health {
+                    jh.doctor = DoctorState::Failed("the diagnosis task stopped".to_string());
+                }
+                self.doctor_rx = None;
                 true
             }
         }
