@@ -211,6 +211,12 @@ matching schemes for ghostty, kitty, alacritty, wezterm, iTerm2 and
 Windows Terminal, so `parks-zion-light` in your terminal and `--theme
 parks-zion-light` here is one coherent look.
 
+Because nothing but the foreground is ours to colour, the parks themes
+carry their park in the text itself: body text is tinted toward each
+park's own hue rather than left near-neutral, so Denali reads as iced
+blue and Zion as sandstone without either straying from the palette
+upstream authored. Accents are upstream's exactly.
+
 The Clusters pane shows interactive (UI/API-created) clusters only —
 job-created clusters are excluded, both for signal and because listing
 them can be slow on busy workspaces.

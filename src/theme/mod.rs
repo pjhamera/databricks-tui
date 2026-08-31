@@ -243,6 +243,61 @@ mod tests {
         }
     }
 
+    /// OKLCH chroma -- how far a colour sits from grey, hue aside.
+    fn chroma(c: Color) -> Option<f64> {
+        let Color::Rgb(r, g, b) = c else {
+            return None;
+        };
+        let f = |v: u8| to_linear(f64::from(v) / 255.0);
+        let (lr, lg, lb) = (f(r), f(g), f(b));
+
+        let l = (0.412_221_470_8 * lr + 0.536_332_536_3 * lg + 0.051_445_992_9 * lb).cbrt();
+        let m = (0.211_903_498_2 * lr + 0.680_699_545_1 * lg + 0.107_396_956_6 * lb).cbrt();
+        let s = (0.088_302_461_9 * lr + 0.281_718_837_6 * lg + 0.629_978_700_5 * lb).cbrt();
+
+        let a = 1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s;
+        let bb = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s;
+        Some(a.hypot(bb))
+    }
+
+    /// The point of the parks themes is that they look like their park. This TUI
+    /// never paints a background, so all of that has to live in the foreground --
+    /// and body text is most of the screen. Upstream ships `fg` near-neutral
+    /// (chroma ~0.017, which reads as grey), so `gen_parks_themes.py` tints it;
+    /// this is the guard on that tint, because a regeneration that dropped it
+    /// would leave 126 readable, passing, indistinguishable themes.
+    ///
+    /// The floor is TINT_FLOOR with room for the gamut clip that `to_hex`
+    /// applies when a hue cannot hold the target chroma at that lightness.
+    #[test]
+    fn every_parks_theme_carries_a_visible_hue_in_its_text() {
+        for t in parks::PARKS {
+            let c = chroma(t.palette.text).expect("parks palettes are all true colour");
+            assert!(
+                c >= 0.025,
+                "{}: text chroma {:.4} is close enough to grey to look like every other park",
+                t.id,
+                c
+            );
+        }
+    }
+
+    /// The tint must not turn body text into an accent. Kept just above the most
+    /// saturated built-in body text (tokyo-night, 0.061) so the parks stay in the
+    /// range of themes people already read all day.
+    #[test]
+    fn parks_text_stays_calmer_than_an_accent() {
+        for t in parks::PARKS {
+            let c = chroma(t.palette.text).expect("parks palettes are all true colour");
+            assert!(
+                c <= 0.065,
+                "{}: text chroma {:.4} is loud enough to compete with the accents",
+                t.id,
+                c
+            );
+        }
+    }
+
     #[test]
     fn parks_source_rev_is_recorded() {
         assert_eq!(

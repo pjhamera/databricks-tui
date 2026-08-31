@@ -9,8 +9,9 @@
   via `scripts/gen_parks_themes.py`, which ports that project's OKLCH math
   and then checks its own output against the terminal schemes the project
   publishes — 1386 values across all 126 variants, so these are upstream's
-  palettes rather than an approximation of them. No new runtime
-  dependencies: the colours are committed as `src/theme/parks.rs`.
+  palettes rather than an approximation of them, save for the body-text
+  tint described below. No new runtime dependencies: the colours are
+  committed as `src/theme/parks.rs`.
 - `--list-themes` prints every theme id, grouped by origin and background,
   so `--help` no longer has to enumerate them.
 
@@ -32,6 +33,16 @@
 - Themes are held in a data table rather than five parallel lists and a
   280-line match. Every existing theme id is unchanged, including the
   `gruvbox` / `gruvbox-light` spelling, so saved preferences keep working.
+- Park themes tint their body text toward the park's own hue, so they are
+  told apart by more than the accent swatches. Upstream authors `fg` for
+  terminals that also paint `bg`, letting a park's character sit in the
+  background; this TUI never paints one, so all 63 parks were arriving as
+  the same near-neutral off-white — chroma 0.017 on average, which reads
+  as grey. `gen_parks_themes.py` now keeps each park's authored hue and
+  raises only its chroma, to an average of 0.041, in the range the
+  built-ins already occupy (kanagawa 0.039, tokyo-night 0.061). Text is
+  iced blue on Denali and sandstone on Zion; contrast is untouched, and
+  `--verify` still diffs the pre-tint colours against upstream.
 
 ## [0.33.0] - 2026-08-23
 
