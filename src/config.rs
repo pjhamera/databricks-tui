@@ -27,6 +27,10 @@ pub struct Config {
     /// doctor never runs and never bills. See `fetchers::doctor`.
     #[serde(default)]
     pub doctor_endpoint: Option<String>,
+    /// Days without a read before the usage scan calls a table stale.
+    /// Defaults to `fetchers::usage::DEFAULT_STALE_DAYS` when unset.
+    #[serde(default)]
+    pub stale_days: Option<i64>,
 }
 
 fn path() -> Option<PathBuf> {
