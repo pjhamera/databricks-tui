@@ -290,6 +290,9 @@ async fn run(
         if app.poll_item_cost() {
             needs_redraw = true;
         }
+        if app.poll_usage() {
+            needs_redraw = true;
+        }
         if app.poll_job_health() {
             needs_redraw = true;
         }
@@ -823,6 +826,29 @@ async fn run(
                         }
                         _ => {}
                     }
+                } else if app.usage.is_some() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            break
+                        }
+                        (KeyCode::Esc, _) | (KeyCode::Char('U'), _) => {
+                            app.close_usage();
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            app.usage_scroll(1);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            app.usage_scroll(-1);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('a'), _) => {
+                            app.usage_toggle_all();
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
                 } else if app.detail.is_some() {
                     match (key.code, key.modifiers) {
                         (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -976,6 +1002,10 @@ async fn run(
                         }
                         (KeyCode::Char('L'), _) => {
                             app.open_lineage(&cli);
+                            needs_redraw = true;
+                        }
+                        (KeyCode::Char('U'), _) => {
+                            app.open_usage(&cli);
                             needs_redraw = true;
                         }
                         (KeyCode::Char('P'), _) => {

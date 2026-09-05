@@ -17,4 +17,5 @@ pub mod secrets;
 pub mod spark_live;
 pub mod upcoming;
 pub mod updates;
+pub mod usage;
 pub mod warehouses;

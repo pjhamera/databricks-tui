@@ -172,6 +172,14 @@ impl Preview {
     }
 }
 
+/// What a usage query should cover, resolved from the catalog cursor.
+enum UsageTarget {
+    /// A whole catalog, or one schema within it.
+    Scan(String, Option<String>),
+    /// One table or view, by full name.
+    Table(String),
+}
+
 /// What a confirmed warehouse choice should run.
 enum PickTarget {
     Preview(String),
@@ -181,6 +189,10 @@ enum PickTarget {
     /// Health report for one job: (job id, display name).
     JobHealth(String, String),
     Lineage(String),
+    /// Staleness scan: (catalog, optional schema).
+    UsageScan(String, Option<String>),
+    /// Usage of one table: its full name.
+    UsageTable(String),
     Sql(String),
 }
 
@@ -406,6 +418,18 @@ pub struct CostView {
     pub data: Option<Result<fetchers::cost::CostData, String>>,
 }
 
+/// A catalog- or schema-wide dataset staleness scan.
+pub struct UsageView {
+    pub warehouse: String,
+    /// Catalog, or `catalog.schema`, that was scanned.
+    pub scope: String,
+    pub scroll: u16,
+    /// Show only the flagged rows — the default, since a full catalog
+    /// listing buries the answer the scan was run to get.
+    pub flagged_only: bool,
+    pub data: Option<Result<fetchers::usage::UsageScan, String>>,
+}
+
 /// Spend over week/month/quarter/year for a single job or pipeline.
 pub struct ItemCostView {
     pub warehouse: String,
@@ -595,6 +619,8 @@ pub struct App {
     #[allow(clippy::type_complexity)]
     item_cost_rx:
         Option<oneshot::Receiver<(Result<fetchers::cost::ResourceCost, String>, Option<String>)>>,
+    pub usage: Option<UsageView>,
+    usage_rx: Option<oneshot::Receiver<Result<fetchers::usage::UsageScan, String>>>,
     pub job_health: Option<JobHealthView>,
     #[allow(clippy::type_complexity)]
     job_health_rx: Option<
@@ -781,6 +807,8 @@ impl App {
             cost_rx: None,
             item_cost: None,
             item_cost_rx: None,
+            usage: None,
+            usage_rx: None,
             job_health: None,
             job_health_rx: None,
             job_health_live_rx: None,
@@ -1105,6 +1133,8 @@ impl App {
         self.cost_rx = None;
         self.item_cost = None;
         self.item_cost_rx = None;
+        self.usage = None;
+        self.usage_rx = None;
         self.job_health = None;
         self.job_health_rx = None;
         self.job_health_live_rx = None;
@@ -2597,6 +2627,243 @@ impl App {
         });
     }
 
+    /// Days without a read before the scan flags a table.
+    pub fn stale_days(&self) -> i64 {
+        self.config
+            .stale_days
+            .filter(|d| *d > 0)
+            .unwrap_or(fetchers::usage::DEFAULT_STALE_DAYS)
+    }
+
+    /// Opens the dataset usage view for whatever the Unity Catalog pane
+    /// has selected, at whatever level it is browsing:
+    ///
+    /// - on a catalog, or anywhere inside one → scan that catalog
+    /// - inside a schema, or on a schema row  → scan narrowed to it
+    /// - on a table or view                   → that object's own usage
+    ///
+    /// Scans are never run by a pane refresh. The catalog pane costs no
+    /// warehouse time today, and silently cold-starting a warehouse
+    /// because someone arrowed through a tree would bill them for
+    /// browsing.
+    pub fn open_usage(&mut self, cli: &Arc<DatabricksCli>) {
+        if self.focus != Panel::Catalog {
+            return;
+        }
+        let Some(target) = self.usage_target() else {
+            self.flash = Some((
+                "✗ select a catalog, schema, table or view first".to_string(),
+                Instant::now(),
+            ));
+            return;
+        };
+        let warehouses = self.warehouses();
+        if warehouses.is_empty() {
+            self.flash = Some((
+                "✗ no SQL warehouse available to query usage".to_string(),
+                Instant::now(),
+            ));
+            return;
+        }
+        if let Some((id, name)) = self.preview_warehouse.clone() {
+            self.start_usage_query(cli, target, id, name);
+            return;
+        }
+        if let [(name, id, _)] = warehouses.as_slice() {
+            self.preview_warehouse = Some((id.clone(), name.clone()));
+            let (id, name) = (id.clone(), name.clone());
+            self.start_usage_query(cli, target, id, name);
+            return;
+        }
+        let index = warehouses
+            .iter()
+            .position(|(_, _, running)| *running)
+            .unwrap_or(0);
+        self.wh_picker = Some(WhPicker {
+            index,
+            target: match target {
+                UsageTarget::Scan(catalog, schema) => PickTarget::UsageScan(catalog, schema),
+                UsageTarget::Table(full_name) => PickTarget::UsageTable(full_name),
+            },
+        });
+    }
+
+    /// Resolves the catalog-pane cursor to what a usage query should
+    /// cover. `uc_path` is the tree position ([], [catalog] or
+    /// [catalog, schema]); the selected row refines it.
+    fn usage_target(&self) -> Option<UsageTarget> {
+        let item = self.selected_item();
+        let kind = item.and_then(|i| match &i.status {
+            Status::Unknown(k) => Some(k.as_str()),
+            _ => None,
+        });
+        match (self.uc_path.as_slice(), kind) {
+            // On a table or view row: that object.
+            (_, Some("TABLE" | "VIEW")) => item.and_then(|i| i.id.clone()).map(UsageTarget::Table),
+            // On a schema row inside a catalog: narrow to that schema.
+            ([catalog], Some("SCHEMA")) => {
+                item.map(|i| UsageTarget::Scan(catalog.clone(), Some(i.name.clone())))
+            }
+            // On a catalog row at the root: that whole catalog.
+            ([], Some("CATALOG")) => item.map(|i| UsageTarget::Scan(i.name.clone(), None)),
+            // Browsing inside a schema (volumes, files): the schema.
+            ([catalog, schema, ..], _) => {
+                Some(UsageTarget::Scan(catalog.clone(), Some(schema.clone())))
+            }
+            // Browsing a catalog's schema list with a non-schema row.
+            ([catalog], _) => Some(UsageTarget::Scan(catalog.clone(), None)),
+            _ => None,
+        }
+    }
+
+    fn start_usage_query(
+        &mut self,
+        cli: &Arc<DatabricksCli>,
+        target: UsageTarget,
+        wh_id: String,
+        wh_name: String,
+    ) {
+        let stale_days = self.stale_days();
+        match target {
+            UsageTarget::Table(full_name) => {
+                self.detail = Some(Detail {
+                    panel: Panel::Catalog,
+                    name: full_name.clone(),
+                    id: full_name.clone(),
+                    kind: None,
+                    section: "Usage",
+                    data: None,
+                    show_raw: false,
+                    scroll: 0,
+                });
+                let (tx, rx) = oneshot::channel();
+                self.detail_rx = Some(rx);
+                let cli = Arc::clone(cli);
+                tokio::spawn(async move {
+                    let data =
+                        fetchers::usage::table_detail(&cli, &full_name, &wh_id, stale_days).await;
+                    let _ = tx.send(data);
+                });
+            }
+            UsageTarget::Scan(catalog, schema) => {
+                let scope = match &schema {
+                    Some(s) => format!("{catalog}.{s}"),
+                    None => catalog.clone(),
+                };
+                self.usage = Some(UsageView {
+                    warehouse: wh_name,
+                    scope,
+                    scroll: 0,
+                    flagged_only: true,
+                    data: None,
+                });
+                let (tx, rx) = oneshot::channel();
+                self.usage_rx = Some(rx);
+                let cli = Arc::clone(cli);
+                tokio::spawn(async move {
+                    let data = fetchers::usage::scan(
+                        &cli,
+                        &wh_id,
+                        &catalog,
+                        schema.as_deref(),
+                        stale_days,
+                    )
+                    .await;
+                    let _ = tx.send(data);
+                });
+            }
+        }
+    }
+
+    pub fn close_usage(&mut self) {
+        self.usage = None;
+        self.usage_rx = None;
+    }
+
+    /// Flips the report between flagged-only and every table in scope.
+    pub fn usage_toggle_all(&mut self) {
+        if let Some(uv) = &mut self.usage {
+            uv.flagged_only = !uv.flagged_only;
+            uv.scroll = 0;
+        }
+    }
+
+    pub fn usage_scroll(&mut self, delta: i32) {
+        if let Some(uv) = &mut self.usage {
+            let rows = match &uv.data {
+                Some(Ok(scan)) if uv.flagged_only => scan.flagged().count(),
+                Some(Ok(scan)) => scan.tables.len(),
+                _ => 0,
+            } as u16;
+            uv.scroll = if delta < 0 {
+                uv.scroll.saturating_sub(delta.unsigned_abs() as u16)
+            } else {
+                (uv.scroll + delta as u16).min(rows.saturating_sub(1))
+            };
+        }
+    }
+
+    /// Writes the scan's verdicts back onto the catalog pane as `alert`
+    /// text, so stale tables show up in the pane and get swept into the
+    /// `!` problems view alongside failing jobs. Only rows currently
+    /// listed are touched — a scan of a whole catalog while the pane
+    /// shows one schema tags just that schema's share.
+    fn apply_usage_alerts(&mut self, scan: &fetchers::usage::UsageScan) {
+        let idx = Panel::ALL
+            .iter()
+            .position(|p| *p == Panel::Catalog)
+            .unwrap_or(0);
+        let Some(Shape::List(items)) = &mut self.shapes[idx] else {
+            return;
+        };
+        let flagged: std::collections::HashMap<&str, String> = scan
+            .flagged()
+            .map(|t| (t.full_name.as_str(), t.note()))
+            .collect();
+        let scanned: std::collections::HashSet<&str> =
+            scan.tables.iter().map(|t| t.full_name.as_str()).collect();
+        for item in items.iter_mut() {
+            let Some(id) = item.id.as_deref() else {
+                continue;
+            };
+            match flagged.get(id) {
+                Some(note) => item.alert = Some(note.clone()),
+                // A rescan has to be able to retract a verdict: a table
+                // read since the last scan is covered by this one and no
+                // longer flagged, so its old alert must go rather than
+                // linger until the next pane refresh.
+                None if scanned.contains(id) => item.alert = None,
+                None => {}
+            }
+        }
+    }
+
+    pub fn poll_usage(&mut self) -> bool {
+        let Some(rx) = &mut self.usage_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                if result.is_err() {
+                    self.preview_warehouse = None;
+                }
+                if let Ok(scan) = &result {
+                    self.apply_usage_alerts(scan);
+                }
+                if let Some(uv) = &mut self.usage {
+                    uv.data = Some(result);
+                }
+                self.usage_rx = None;
+                true
+            }
+            Err(oneshot::error::TryRecvError::Empty) => false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.usage_rx = None;
+                true
+            }
+        }
+    }
+
     pub fn close_cost(&mut self) {
         self.cost = None;
         self.cost_rx = None;
@@ -3496,6 +3763,15 @@ impl App {
                 self.start_job_health_query(cli, id.clone(), name.clone(), job_id, job_name)
             }
             PickTarget::Lineage(table) => self.start_lineage_query(cli, table, id.clone()),
+            PickTarget::UsageScan(catalog, schema) => self.start_usage_query(
+                cli,
+                UsageTarget::Scan(catalog, schema),
+                id.clone(),
+                name.clone(),
+            ),
+            PickTarget::UsageTable(table) => {
+                self.start_usage_query(cli, UsageTarget::Table(table), id.clone(), name.clone())
+            }
             PickTarget::Sql(query) => self.start_sql_query(cli, query, id.clone(), name.clone()),
         }
     }
@@ -4601,6 +4877,7 @@ impl App {
             || self.preview_rx.is_some()
             || self.cost_rx.is_some()
             || self.item_cost_rx.is_some()
+            || self.usage_rx.is_some()
             || self.job_health_rx.is_some()
             || self.job_health_live_rx.is_some()
             || self.sql_rx.is_some()
@@ -4766,7 +5043,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_table, parse_params, token_at_cursor, App, ThemeMode};
+    use super::{
+        fetchers, from_table, parse_params, token_at_cursor, App, DatabricksCli, Panel, ThemeMode,
+        UsageTarget,
+    };
     use crate::theme::{self, ThemeKind};
 
     fn app_with_picker() -> App {
@@ -4781,6 +5061,196 @@ mod tests {
 
     fn picker_kind(app: &App) -> ThemeKind {
         app.theme_picker.as_ref().unwrap().kind
+    }
+
+    /// Builds a catalog pane holding `items`, positioned at `path` in
+    /// the tree, with the cursor on row `sel`.
+    fn catalog_app(path: &[&str], items: Vec<(&str, &str)>, sel: usize) -> App {
+        use crate::shape::{ListItem, Shape, Status};
+        let mut app = App::new(60, ThemeMode::default());
+        app.dismiss_splash();
+        app.focus = Panel::Catalog;
+        app.uc_path = path.iter().map(|s| s.to_string()).collect();
+        let idx = Panel::ALL
+            .iter()
+            .position(|p| *p == Panel::Catalog)
+            .unwrap();
+        app.shapes[idx] = Some(Shape::List(
+            items
+                .into_iter()
+                .map(|(name, kind)| ListItem {
+                    id: Some(if kind == "TABLE" || kind == "VIEW" {
+                        format!("{}.{name}", path.join("."))
+                    } else {
+                        name.to_string()
+                    }),
+                    name: name.to_string(),
+                    status: Status::Unknown(kind.to_string()),
+                    detail: None,
+                    history: Vec::new(),
+                    alert: None,
+                })
+                .collect(),
+        ));
+        app.selected[idx] = sel;
+        app
+    }
+
+    /// `U` means different things at different depths of the tree; this
+    /// is the mapping the whole feature hangs off.
+    #[test]
+    fn usage_target_follows_the_catalog_cursor() {
+        // Root, on a catalog row → that whole catalog.
+        let app = catalog_app(&[], vec![("main", "CATALOG"), ("dev", "CATALOG")], 1);
+        assert!(matches!(
+            app.usage_target(),
+            Some(UsageTarget::Scan(c, None)) if c == "dev"
+        ));
+
+        // Inside a catalog, on a schema row → narrowed to that schema.
+        let app = catalog_app(&["main"], vec![("sales", "SCHEMA")], 0);
+        assert!(matches!(
+            app.usage_target(),
+            Some(UsageTarget::Scan(c, Some(s))) if c == "main" && s == "sales"
+        ));
+
+        // On a table row → that table.
+        let app = catalog_app(&["main", "sales"], vec![("orders", "TABLE")], 0);
+        assert!(matches!(
+            app.usage_target(),
+            Some(UsageTarget::Table(t)) if t == "main.sales.orders"
+        ));
+
+        // A view is a dataset too.
+        let app = catalog_app(&["main", "sales"], vec![("v_orders", "VIEW")], 0);
+        assert!(matches!(app.usage_target(), Some(UsageTarget::Table(_))));
+
+        // On a volume, where "this object's usage" is meaningless, the
+        // enclosing schema is the useful answer rather than nothing.
+        let app = catalog_app(&["main", "sales"], vec![("raw_files", "VOLUME")], 0);
+        assert!(matches!(
+            app.usage_target(),
+            Some(UsageTarget::Scan(c, Some(s))) if c == "main" && s == "sales"
+        ));
+    }
+
+    #[test]
+    fn usage_target_is_none_outside_the_catalog_pane() {
+        let mut app = catalog_app(&[], vec![("main", "CATALOG")], 0);
+        app.focus = Panel::Jobs;
+        app.open_usage(&std::sync::Arc::new(DatabricksCli::new(None)));
+        assert!(app.usage.is_none(), "usage must not open from another pane");
+    }
+
+    fn scan_of(rows: Vec<(&str, Option<i64>)>) -> fetchers::usage::UsageScan {
+        use crate::fetchers::usage::{Freshness, TableUsage, UsageScan};
+        let tables: Vec<TableUsage> = rows
+            .into_iter()
+            .map(|(name, days)| TableUsage {
+                full_name: name.to_string(),
+                schema: "sales".to_string(),
+                table_type: "MANAGED".to_string(),
+                days_since_read: days,
+                days_since_write: Some(1),
+                reads: 0,
+                readers: 0,
+                age_days: Some(400),
+                freshness: match days {
+                    None => Freshness::NeverRead,
+                    Some(d) if d >= 90 => Freshness::Stale,
+                    Some(_) => Freshness::Active,
+                },
+            })
+            .collect();
+        UsageScan {
+            scope: "main.sales".to_string(),
+            stale_days: 90,
+            total: tables.len(),
+            stale_count: 0,
+            never_read_count: 0,
+            tables,
+        }
+    }
+
+    fn alert_of(app: &App, name: &str) -> Option<String> {
+        use crate::shape::Shape;
+        let idx = Panel::ALL
+            .iter()
+            .position(|p| *p == Panel::Catalog)
+            .unwrap();
+        match &app.shapes[idx] {
+            Some(Shape::List(items)) => items
+                .iter()
+                .find(|i| i.name == name)
+                .and_then(|i| i.alert.clone()),
+            _ => None,
+        }
+    }
+
+    /// A scan marks stale tables in the pane, which is what carries them
+    /// into the `!` problems view.
+    #[test]
+    fn scan_flags_stale_tables_in_the_pane() {
+        let mut app = catalog_app(
+            &["main", "sales"],
+            vec![("orders", "TABLE"), ("legacy", "TABLE")],
+            0,
+        );
+        app.apply_usage_alerts(&scan_of(vec![
+            ("main.sales.orders", Some(3)),
+            ("main.sales.legacy", Some(200)),
+        ]));
+        assert_eq!(alert_of(&app, "orders"), None);
+        assert_eq!(
+            alert_of(&app, "legacy").as_deref(),
+            Some("no reads in 200d")
+        );
+    }
+
+    /// And a later scan has to be able to take the mark back off, or a
+    /// table read since the last scan stays accused until a refresh.
+    #[test]
+    fn rescan_retracts_a_verdict_once_the_table_is_read_again() {
+        let mut app = catalog_app(&["main", "sales"], vec![("legacy", "TABLE")], 0);
+        app.apply_usage_alerts(&scan_of(vec![("main.sales.legacy", Some(200))]));
+        assert!(alert_of(&app, "legacy").is_some());
+        app.apply_usage_alerts(&scan_of(vec![("main.sales.legacy", Some(2))]));
+        assert_eq!(alert_of(&app, "legacy"), None);
+    }
+
+    /// A scan of one schema must not clear alerts belonging to tables it
+    /// never covered.
+    #[test]
+    fn a_narrow_scan_leaves_unscanned_rows_alone() {
+        let mut app = catalog_app(
+            &["main", "sales"],
+            vec![("legacy", "TABLE"), ("other", "TABLE")],
+            0,
+        );
+        app.apply_usage_alerts(&scan_of(vec![
+            ("main.sales.legacy", Some(200)),
+            ("main.sales.other", None),
+        ]));
+        assert!(alert_of(&app, "other").is_some());
+        // A rescan covering only `legacy` must not touch `other`.
+        app.apply_usage_alerts(&scan_of(vec![("main.sales.legacy", Some(1))]));
+        assert!(
+            alert_of(&app, "other").is_some(),
+            "an unscanned row lost its alert"
+        );
+    }
+
+    #[test]
+    fn stale_days_falls_back_to_the_default_for_absent_or_absurd_values() {
+        use crate::fetchers::usage::DEFAULT_STALE_DAYS;
+        let mut app = App::new(60, ThemeMode::default());
+        assert_eq!(app.stale_days(), DEFAULT_STALE_DAYS);
+        app.config.stale_days = Some(120);
+        assert_eq!(app.stale_days(), 120);
+        app.config.stale_days = Some(0);
+        assert_eq!(app.stale_days(), DEFAULT_STALE_DAYS);
+        app.config.stale_days = Some(-5);
+        assert_eq!(app.stale_days(), DEFAULT_STALE_DAYS);
     }
 
     #[test]

@@ -76,6 +76,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     }
 
+    if app.usage.is_some() {
+        draw_usage(f, root[1], app, p);
+        return;
+    }
+
     if app.job_health.is_some() {
         draw_job_health(f, root[1], app, p);
         return;
@@ -538,6 +543,11 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                 ("enter / backspace", "drill down / up (into volumes too)"),
                 ("p / P", "preview table rows (P picks the warehouse)"),
                 ("L", "lineage: upstream and downstream tables"),
+                (
+                    "U",
+                    "usage: on a catalog or schema, rank tables by how long unread; \
+                     on a table, who reads it",
+                ),
                 (":", "query the selected table"),
                 ("enter on a file", "peek at its first 200 lines"),
             ],
@@ -1276,6 +1286,220 @@ fn bucket_color(bucket: &str, p: &Palette) -> Color {
         "All-Purpose" => p.clusters,
         "DLT" => p.pipelines,
         _ => p.dim,
+    }
+}
+
+/// Clips a fully-qualified name to `width`, keeping the tail. The table
+/// name is the part worth reading; `catalog.schema.` prefixes are shared
+/// across the whole report and are what should go.
+fn elide_head(name: &str, width: usize) -> String {
+    let len = name.chars().count();
+    if len <= width || width < 2 {
+        return name.to_string();
+    }
+    let keep = width - 1;
+    format!("…{}", name.chars().skip(len - keep).collect::<String>())
+}
+
+/// The dataset staleness report: every table in scope ranked by how long
+/// it has gone unread, never-read tables first.
+fn draw_usage(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
+    use crate::fetchers::usage::{Freshness, TableUsage, MAX_ROWS, WINDOW_DAYS};
+
+    let uv = app.usage.as_ref().unwrap();
+    let title = Line::from(vec![
+        Span::styled(" ◢◤ ", Style::default().fg(p.brand)),
+        Span::styled(
+            format!("Dataset usage · {} ", uv.scope),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("via {} ", uv.warehouse), Style::default().fg(p.dim)),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(p.brand).add_modifier(Modifier::BOLD))
+        .padding(Padding::new(1, 1, 1, 1));
+
+    match &uv.data {
+        None => {
+            let par = Paragraph::new(format!(
+                "{} scanning {} — joining information_schema against \
+                 system.access.table_lineage; the warehouse may need to start…",
+                app.spinner(),
+                uv.scope,
+            ))
+            .style(Style::default().fg(p.warn))
+            .wrap(Wrap { trim: false })
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Err(e)) => {
+            let par = Paragraph::new(format!(
+                "✗ {e}\n\nthe scan needs read access to system.access.table_lineage \
+                 and to the catalog's information_schema"
+            ))
+            .style(Style::default().fg(p.err))
+            .wrap(Wrap { trim: false })
+            .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(scan)) if scan.tables.is_empty() => {
+            let par = Paragraph::new(format!("∅ no tables visible in {}", uv.scope))
+                .style(Style::default().fg(p.dim))
+                .block(block);
+            f.render_widget(par, area);
+        }
+        Some(Ok(scan)) => {
+            let mut lines: Vec<Line> = Vec::new();
+
+            let flagged = scan.stale_count + scan.never_read_count;
+            let headline_style = if flagged == 0 {
+                Style::default().fg(p.ok)
+            } else {
+                Style::default().fg(p.warn)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{flagged} "),
+                    headline_style.add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "of {} tables unread for {}+ days   ",
+                        scan.tables.len(),
+                        scan.stale_days
+                    ),
+                    Style::default().fg(p.text),
+                ),
+                Span::styled(
+                    format!("{} never read   ", scan.never_read_count),
+                    Style::default().fg(p.dim),
+                ),
+                Span::styled(
+                    format!("{} stale", scan.stale_count),
+                    Style::default().fg(p.dim),
+                ),
+            ]));
+
+            // The scan is only as complete as the caller's grants, and a
+            // partial information_schema read looks exactly like a full
+            // one. Say so rather than implying the list is exhaustive.
+            // Two lines, each short enough to survive an 80-column
+            // terminal without the caveat being the part that clips.
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " lineage: {WINDOW_DAYS}d of Unity Catalog access only — non-UC \
+                     compute and direct file reads are invisible"
+                ),
+                Style::default().fg(p.dim),
+            )));
+            lines.push(Line::from(Span::styled(
+                " information_schema: only objects you can see, so a partial scan \
+                 looks complete"
+                    .to_string(),
+                Style::default().fg(p.dim),
+            )));
+            if scan.total > MAX_ROWS {
+                lines.push(Line::from(Span::styled(
+                    format!(" showing the {MAX_ROWS} stalest of {} tables", scan.total),
+                    Style::default().fg(p.warn),
+                )));
+            }
+            lines.push(Line::default());
+
+            let rows: Vec<&TableUsage> = if uv.flagged_only {
+                scan.flagged().collect()
+            } else {
+                scan.tables.iter().collect()
+            };
+
+            if rows.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "✓ nothing unread for {}+ days — press a to list all {} tables",
+                        scan.stale_days,
+                        scan.tables.len()
+                    ),
+                    Style::default().fg(p.ok),
+                )));
+            } else {
+                let name_w = rows
+                    .iter()
+                    .map(|t| t.full_name.chars().count())
+                    .max()
+                    .unwrap_or(20)
+                    .clamp(20, 56);
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{:<name_w$}  {:>10}  {:>10}  {:>7}  {:>7}  {}",
+                        "TABLE", "LAST READ", "LAST WRITE", "READS", "READERS", "TYPE",
+                    ),
+                    Style::default().fg(p.dim).add_modifier(Modifier::BOLD),
+                )));
+
+                let visible = area.height.saturating_sub(9) as usize;
+                for t in rows.iter().skip(uv.scroll as usize).take(visible) {
+                    let (marker, color) = match t.freshness {
+                        Freshness::NeverRead => ("✗ ", p.err),
+                        Freshness::Stale => ("⚠ ", p.warn),
+                        Freshness::Active => ("· ", p.ok),
+                    };
+                    let ago = |d: Option<i64>| match d {
+                        Some(d) => format!("{d}d"),
+                        None => "never".to_string(),
+                    };
+                    let name = elide_head(&t.full_name, name_w.saturating_sub(2));
+                    lines.push(Line::from(vec![
+                        Span::styled(marker, Style::default().fg(color)),
+                        Span::styled(
+                            format!("{name:<w$}", w = name_w.saturating_sub(2)),
+                            Style::default().fg(p.text),
+                        ),
+                        Span::styled(
+                            format!("  {:>10}", ago(t.days_since_read)),
+                            Style::default().fg(color),
+                        ),
+                        Span::styled(
+                            format!(
+                                "  {:>10}  {:>7}  {:>7}  {}",
+                                ago(t.days_since_write),
+                                t.reads,
+                                t.readers,
+                                t.table_type.to_lowercase(),
+                            ),
+                            Style::default().fg(p.dim),
+                        ),
+                    ]));
+                }
+            }
+
+            lines.push(Line::default());
+            lines.push(Line::from(vec![
+                Span::styled("  a ", Style::default().fg(p.key)),
+                Span::styled(
+                    if uv.flagged_only {
+                        "show every table   "
+                    } else {
+                        "show only flagged   "
+                    },
+                    Style::default().fg(p.dim),
+                ),
+                Span::styled("j/k ", Style::default().fg(p.key)),
+                Span::styled("scroll   ", Style::default().fg(p.dim)),
+                Span::styled("Esc ", Style::default().fg(p.key)),
+                Span::styled(
+                    "back — flagged tables are now marked in the ",
+                    Style::default().fg(p.dim),
+                ),
+                Span::styled("!", Style::default().fg(p.key)),
+                Span::styled(" problems view", Style::default().fg(p.dim)),
+            ]));
+
+            let par = Paragraph::new(lines).block(block);
+            f.render_widget(par, area);
+        }
     }
 }
 
@@ -3763,6 +3987,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, p: &Palette) {
                     spans.push(key(":"));
                     spans.push(dim(" query table   "));
                 }
+                // Usage works at every level of the tree: a catalog or
+                // schema scans, a table reports on itself.
+                spans.push(key("U"));
+                spans.push(dim(" usage   "));
             }
             Panel::Dashboards => {}
             Panel::Secrets => {
@@ -4407,6 +4635,153 @@ mod tests {
                 .map(|s| s.content.as_ref())
                 .collect();
             assert_eq!(joined, sql);
+        }
+    }
+
+    fn usage_table(
+        name: &str,
+        days_since_read: Option<i64>,
+        stale_days: i64,
+    ) -> crate::fetchers::usage::TableUsage {
+        use crate::fetchers::usage::{Freshness, TableUsage};
+        TableUsage {
+            full_name: name.to_string(),
+            schema: "sales".to_string(),
+            table_type: "MANAGED".to_string(),
+            days_since_read,
+            days_since_write: Some(2),
+            reads: days_since_read.map(|_| 12).unwrap_or(0),
+            readers: days_since_read.map(|_| 3).unwrap_or(0),
+            age_days: Some(400),
+            freshness: match days_since_read {
+                None => Freshness::NeverRead,
+                Some(d) if d >= stale_days => Freshness::Stale,
+                Some(_) => Freshness::Active,
+            },
+        }
+    }
+
+    fn usage_app(flagged_only: bool) -> App {
+        use crate::app::UsageView;
+        use crate::fetchers::usage::UsageScan;
+        let mut app = App::new(60, ThemeMode::default());
+        app.dismiss_splash();
+        let tables = vec![
+            usage_table("main.sales.abandoned_carts", None, 90),
+            usage_table("main.sales.legacy_orders", Some(212), 90),
+            usage_table("main.sales.daily_revenue", Some(1), 90),
+        ];
+        app.usage = Some(UsageView {
+            warehouse: "Shared Endpoint".to_string(),
+            scope: "main".to_string(),
+            scroll: 0,
+            flagged_only,
+            data: Some(Ok(UsageScan {
+                scope: "main".to_string(),
+                stale_days: 90,
+                total: 3,
+                stale_count: 1,
+                never_read_count: 1,
+                tables,
+            })),
+        });
+        app
+    }
+
+    #[test]
+    fn usage_report_lists_flagged_tables_and_hides_the_active_one() {
+        let out = render(&usage_app(true)).join("\n");
+        assert!(
+            out.contains("abandoned_carts"),
+            "never-read row missing:\n{out}"
+        );
+        assert!(out.contains("legacy_orders"), "stale row missing:\n{out}");
+        assert!(
+            !out.contains("daily_revenue"),
+            "flagged-only should hide an actively read table:\n{out}"
+        );
+        assert!(out.contains("212d"), "days-since-read missing:\n{out}");
+        assert!(
+            out.contains("never"),
+            "never-read needs a distinct cell:\n{out}"
+        );
+    }
+
+    #[test]
+    fn usage_report_shows_every_table_once_toggled() {
+        let out = render(&usage_app(false)).join("\n");
+        assert!(
+            out.contains("daily_revenue"),
+            "toggled report should include active tables:\n{out}"
+        );
+    }
+
+    /// The report is only as complete as the caller's grants and only
+    /// sees Unity Catalog-governed access. Shipping the numbers without
+    /// that caveat would overstate what "no reads" proves.
+    #[test]
+    fn usage_report_states_what_it_cannot_see() {
+        let out = render(&usage_app(true)).join("\n");
+        assert!(
+            out.contains("Unity Catalog access only"),
+            "coverage caveat missing:\n{out}"
+        );
+        assert!(
+            out.contains("only objects you can see"),
+            "information_schema privilege caveat missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn usage_report_headline_counts_the_flagged_tables() {
+        let out = render(&usage_app(true)).join("\n");
+        assert!(
+            out.contains("of 3 tables unread"),
+            "headline missing:\n{out}"
+        );
+        assert!(
+            out.contains("1 never read"),
+            "never-read count missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn usage_report_renders_loading_and_error_states() {
+        use crate::app::UsageView;
+        let mut app = App::new(60, ThemeMode::default());
+        app.dismiss_splash();
+        app.usage = Some(UsageView {
+            warehouse: "wh".to_string(),
+            scope: "main.sales".to_string(),
+            scroll: 0,
+            flagged_only: true,
+            data: None,
+        });
+        assert!(render(&app).join("\n").contains("scanning main.sales"));
+
+        app.usage.as_mut().unwrap().data = Some(Err("permission denied".to_string()));
+        let out = render(&app).join("\n");
+        assert!(
+            out.contains("permission denied"),
+            "error text missing:\n{out}"
+        );
+    }
+
+    /// Long fully-qualified names are clipped from the left, because the
+    /// table name is the part that distinguishes rows.
+    #[test]
+    fn elide_head_keeps_the_tail() {
+        assert_eq!(elide_head("main.sales.orders", 40), "main.sales.orders");
+        assert_eq!(elide_head("main.sales.orders", 9), "…s.orders");
+        assert_eq!(elide_head("abc", 1), "abc");
+    }
+
+    /// A narrow terminal must clip, not panic.
+    #[test]
+    fn usage_report_survives_a_narrow_terminal() {
+        let app = usage_app(true);
+        for width in [20, 40, 80] {
+            render_at(&app, width);
         }
     }
 

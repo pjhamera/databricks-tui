@@ -1,5 +1,44 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Dataset usage and staleness (`U` in the Unity Catalog pane). On a
+  catalog or a schema it ranks every table by how long it has gone
+  unread, never-read tables first, and reports how many are past the
+  threshold. On a table or view it shows read and write recency, read
+  counts over 30/90/365 days, and the principals and entity kinds
+  actually consuming it.
+
+  The scan LEFT JOINs `information_schema.tables` onto an aggregate of
+  `system.access.table_lineage`, and the join direction is the feature: a
+  table nobody has touched has no lineage rows at all, so querying
+  lineage alone leaves the deadest tables invisible rather than obvious.
+  Reads are counted from `source_table_full_name` only — a row where the
+  table is the target is a write, and a pipeline still filling a table
+  nobody consumes is exactly the waste worth reporting, not evidence of
+  use.
+
+  Flagged tables are written back onto the catalog pane as `alert` text,
+  so they surface in the pane and in the `!` problems view next to
+  failing jobs. `a` in the report toggles between flagged-only and every
+  table in scope.
+
+  Two limits are stated in the report rather than left to be discovered:
+  lineage only records access through Unity Catalog-governed compute, so
+  reads of the underlying cloud files, from non-UC clusters, or against
+  `hive_metastore` never appear; and `information_schema` returns only
+  objects you have privileges on, so a partial scan looks exactly like a
+  complete one. It is a triage list, not a drop list.
+- `stale_days` in `~/.config/databricks-tui/config.json` sets the
+  threshold, defaulting to 90.
+
+### Notes
+- The scan is never triggered by a refresh. Browsing the Unity Catalog
+  tree costs no warehouse time today, and silently cold-starting a
+  warehouse because someone arrowed through a tree would bill them for
+  looking around.
+
 ## [0.35.0] - 2026-08-31
 
 ### Added

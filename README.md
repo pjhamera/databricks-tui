@@ -105,6 +105,25 @@ Terminal dashboard for Databricks — monitor compute, jobs, pipelines, SQL ware
   dashboard pays once per real change in the job's condition rather than
   once per redraw. The call runs on your own warehouse against your own
   endpoint: the error text never leaves the workspace
+- Dataset usage and staleness (`U` in Unity Catalog): on a catalog or
+  schema, ranks every table by how long it has gone unread — never-read
+  tables first — and marks anything past the threshold (90 days by
+  default, `stale_days` in the config file) so it also shows up in the
+  pane and in the `!` problems view. The scan LEFT JOINs
+  `information_schema.tables` onto `system.access.table_lineage`, which
+  is the part that matters: a table nobody has touched has *no* lineage
+  rows at all, so querying lineage alone leaves the deadest tables
+  invisible rather than obvious. On a single table, `U` shows read and
+  write recency, read counts over 30/90/365 days, and which principals
+  and entity kinds actually consume it. Two honest limits, both stated
+  in the report: lineage only records access through Unity
+  Catalog-governed compute, so reads of the underlying cloud files, from
+  non-UC clusters or against `hive_metastore` never appear; and
+  `information_schema` returns only objects you have privileges on, so a
+  partial scan looks exactly like a complete one. "No reads" is
+  evidence, not proof — treat it as a triage list, not a drop list. The
+  scan never runs on a refresh: browsing the catalog tree costs no
+  warehouse time today, and it stays that way
 - Watch a run (`W` in a run view): keep doing other things and get a
   terminal bell + flash the moment it finishes, success or failure —
   a `👁` counter in the header shows what's being watched
@@ -272,6 +291,7 @@ them can be slow on busy workspaces.
 | `Backspace` | Go up one level in the Unity Catalog tree |
 | `p` | Preview sample data for the selected table/view (may start a warehouse); `←`/`→` page columns, `/` filters columns, `v` record view, `e` exports CSV |
 | `L` | Lineage tree: up to 3 hops upstream/downstream of the selected table/view |
+| `U` | Dataset usage: on a catalog or schema, ranks every table by how long it has gone unread (never-read first) and flags anything past the threshold into the `!` problems view; on a table or view, shows its read/write recency and who consumes it. `a` toggles flagged-only, `Esc` closes |
 | `P` | Choose which SQL warehouse runs previews |
 | `s` | Action on selected item (start/stop, run job) — asks to confirm |
 | `p` (run confirm) | Edit parameters before the run: prefilled `key=value` prompt |

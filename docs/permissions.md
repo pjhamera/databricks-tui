@@ -21,12 +21,13 @@ work with plain read access; the ones below have extra prerequisites.
 | Per-job/pipeline spend | `c` | Same as the cost view |
 | Cost scoping to the current workspace | automatic | `SELECT` on `system.access.workspaces_latest` |
 | Lineage | `L` | `SELECT` on `system.access.table_lineage` |
+| Dataset usage & staleness | `U` | `SELECT` on `system.access.table_lineage`, plus `USE CATALOG`/`USE SCHEMA` on what you scan — `information_schema` returns only objects you have privileges on, so a partial result is indistinguishable from a complete one |
 | Job health report | `i` | `SELECT` on `system.lakeflow.job_run_timeline` and `job_task_run_timeline` (the latter also feeds compute pressure via `system.compute.node_timeline`/`clusters`); both degrade gracefully if unreadable. Spark diagnostics (skew/spill) need no extra grant against the run's live driver; falling back to the delivered event log after the cluster terminates additionally needs `READ` on the cluster's `cluster_log_conf` DBFS destination |
 | AI job doctor | `d` in the health report | Opt-in and off by default: needs `doctor_endpoint` set in `~/.config/databricks-tui/config.json`, `CAN QUERY` on that model serving endpoint, and `CAN USE` on the warehouse the health report is already using (the call goes through `ai_query` there). Nothing extra is read — the digest is built from the health report you can already see |
 
 ## About system tables
 
-The cost and lineage features read [system tables](https://docs.databricks.com/aws/en/admin/system-tables/).
+The cost, lineage and dataset-usage features read [system tables](https://docs.databricks.com/aws/en/admin/system-tables/).
 Two things must be true:
 
 1. **The schemas are enabled** — an account admin enables `system.billing`
@@ -96,6 +97,19 @@ can bill. It is off until you point it at a model serving endpoint:
 
 in `~/.config/databricks-tui/config.json`. With no endpoint set, the code
 path never runs.
+
+## Tuning the staleness threshold
+
+The usage scan (`U`) calls a table stale after 90 days without a read.
+To use a different window — 120 days, say:
+
+```json
+{ "stale_days": 120 }
+```
+
+in `~/.config/databricks-tui/config.json`. The threshold only changes
+which tables are flagged; the underlying read/write recency is always
+measured over the full year `system.access.table_lineage` retains.
 
 Even configured, four things keep it cheap:
 
